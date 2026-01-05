@@ -48,3 +48,6 @@ public/jmdict-*.json
 # cursor
 .specstory/
 .cursorindexingignore
+
+# feature tracking
+FEATURES.md
