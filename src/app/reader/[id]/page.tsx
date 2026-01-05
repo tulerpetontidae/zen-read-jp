@@ -352,14 +352,14 @@ export default function ReaderPage({ params }: { params: Promise<{ id: string }>
                 </div>
             </main>
 
-            <footer className="h-14 flex flex-col shrink-0 px-10 pb-4 border-t border-stone-100">
-                <div className="w-full h-px bg-stone-100 mb-3 relative overflow-hidden mt-2">
+            <footer className="flex flex-col shrink-0 px-10 pt-[2px] pb-3 border-t border-stone-100">
+                <div className="w-full h-0.75 bg-stone-100 relative overflow-hidden rounded">
                     <div
                         className="h-full bg-rose-400/50 absolute left-0 transition-all duration-700 ease-out"
                         style={{ width: `${progress}%` }}
                     />
                 </div>
-                <div className="text-center font-serif text-[10px] text-stone-400 tracking-[0.3em] uppercase opacity-70">
+                <div className="mt-2 text-center font-serif text-[14px] text-stone-400 tracking-[0.3em] uppercase opacity-70">
                     {progress}%
                 </div>
             </footer>
