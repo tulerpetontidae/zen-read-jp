@@ -3,6 +3,8 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { db } from '@/lib/db';
 import { IoClose, IoEye, IoEyeOff } from 'react-icons/io5';
+import { checkGoogleTranslateAvailable } from '@/lib/browser';
+import type { TranslationEngine } from '@/lib/translation';
 
 export const FONT_OPTIONS = [
     { value: 'noto-serif', label: 'Noto Serif JP', fontFamily: 'var(--font-noto-serif-jp), serif' },
@@ -47,6 +49,8 @@ export default function SettingsModal({ isOpen, onClose, onSettingsChange }: Set
     const [selectedWidth, setSelectedWidth] = useState('medium');
     const [selectedFontSize, setSelectedFontSize] = useState('medium');
     const [selectedTheme, setSelectedTheme] = useState('light');
+    const [selectedEngine, setSelectedEngine] = useState<TranslationEngine>('openai');
+    const [googleAvailable, setGoogleAvailable] = useState(false);
     const [isSaving, setIsSaving] = useState(false);
     const [saveMessage, setSaveMessage] = useState<string | null>(null);
     
@@ -56,33 +60,57 @@ export default function SettingsModal({ isOpen, onClose, onSettingsChange }: Set
         width: string;
         fontSize: string;
         theme: string;
+        engine: TranslationEngine;
     } | null>(null);
+
+    // Check Google Translate availability
+    useEffect(() => {
+        if (isOpen) {
+            checkGoogleTranslateAvailable().then(setGoogleAvailable);
+        }
+    }, [isOpen]);
 
     // Load existing settings on mount
     useEffect(() => {
         if (isOpen) {
             const loadSettings = async () => {
                 try {
-                    const [apiKeySetting, fontSetting, widthSetting, fontSizeSetting, themeSetting] = await Promise.all([
+                    const [apiKeySetting, fontSetting, widthSetting, fontSizeSetting, themeSetting, engineSetting] = await Promise.all([
                         db.settings.get('openai_api_key'),
                         db.settings.get('reader_font'),
                         db.settings.get('reader_width'),
                         db.settings.get('reader_font_size'),
                         db.settings.get('theme'),
+                        db.settings.get('translation_engine'),
                     ]);
                     const font = fontSetting?.value || 'noto-serif';
                     const width = widthSetting?.value || 'medium';
                     const fontSize = fontSizeSetting?.value || 'medium';
                     const theme = themeSetting?.value || 'light';
                     
+                    // Determine engine: use saved, or auto-select based on availability
+                    let engine: TranslationEngine = 'openai';
+                    if (engineSetting?.value === 'google' || engineSetting?.value === 'openai') {
+                        engine = engineSetting.value as TranslationEngine;
+                    } else {
+                        // Auto-select: prefer Google if available, else OpenAI if key exists
+                        const googleAvail = await checkGoogleTranslateAvailable();
+                        if (googleAvail) {
+                            engine = 'google';
+                        } else if (apiKeySetting?.value) {
+                            engine = 'openai';
+                        }
+                    }
+                    
                     if (apiKeySetting?.value) setApiKey(apiKeySetting.value);
                     setSelectedFont(font);
                     setSelectedWidth(width);
                     setSelectedFontSize(fontSize);
                     setSelectedTheme(theme);
+                    setSelectedEngine(engine);
                     
                     // Store initial values for reverting
-                    initialValuesRef.current = { font, width, fontSize, theme };
+                    initialValuesRef.current = { font, width, fontSize, theme, engine };
                 } catch (e) {
                     console.error('Failed to load settings:', e);
                 }
@@ -116,13 +144,15 @@ export default function SettingsModal({ isOpen, onClose, onSettingsChange }: Set
                 db.settings.put({ key: 'reader_width', value: selectedWidth }),
                 db.settings.put({ key: 'reader_font_size', value: selectedFontSize }),
                 db.settings.put({ key: 'theme', value: selectedTheme }),
+                db.settings.put({ key: 'translation_engine', value: selectedEngine }),
             ]);
             // Update initial values after successful save
             initialValuesRef.current = { 
                 font: selectedFont, 
                 width: selectedWidth, 
                 fontSize: selectedFontSize, 
-                theme: selectedTheme 
+                theme: selectedTheme,
+                engine: selectedEngine
             };
             setSaveMessage('Settings saved successfully!');
             onSettingsChange?.();
@@ -144,6 +174,7 @@ export default function SettingsModal({ isOpen, onClose, onSettingsChange }: Set
             setSelectedWidth(initialValuesRef.current.width);
             setSelectedFontSize(initialValuesRef.current.fontSize);
             setSelectedTheme(initialValuesRef.current.theme);
+            setSelectedEngine(initialValuesRef.current.engine);
             applyTheme(initialValuesRef.current.theme);
             onSettingsChange?.();
         }
@@ -313,47 +344,90 @@ export default function SettingsModal({ isOpen, onClose, onSettingsChange }: Set
                     <div className="space-y-4">
                         <h3 className="text-sm font-medium uppercase tracking-wide" style={{ color: 'var(--zen-heading)' }}>Translation</h3>
                         
-                        {/* OpenAI API Key */}
+                        {/* Translation Engine Selection */}
                         <div className="space-y-2">
-                            <label className="block text-sm font-medium" style={{ color: 'var(--zen-text)' }}>
-                                OpenAI API Key
-                            </label>
-                            <p className="text-xs mb-2" style={{ color: 'var(--zen-text-muted)' }}>
-                                Required for paragraph translation. Get your key from{' '}
-                                <a 
-                                    href="https://platform.openai.com/api-keys" 
-                                    target="_blank" 
-                                    rel="noopener noreferrer"
-                                    className="text-rose-500 hover:text-rose-600 underline"
-                                >
-                                    OpenAI Platform
-                                </a>
-                            </p>
-                            <div className="relative">
-                                <input
-                                    type={showKey ? 'text' : 'password'}
-                                    value={apiKey}
-                                    onChange={(e) => setApiKey(e.target.value)}
-                                    placeholder="sk-..."
-                                    className="w-full px-4 py-3 pr-12 rounded-xl focus:outline-none focus:ring-2 focus:ring-rose-200 focus:border-rose-300 transition-all"
-                                    style={{
-                                        backgroundColor: 'var(--zen-btn-bg)',
-                                        borderWidth: '1px',
-                                        borderStyle: 'solid',
-                                        borderColor: 'var(--zen-btn-border)',
-                                        color: 'var(--zen-text)',
-                                    }}
-                                />
+                            <label className="block text-sm font-medium" style={{ color: 'var(--zen-text)' }}>Translation Engine</label>
+                            <div className="flex gap-2">
                                 <button
-                                    type="button"
-                                    onClick={() => setShowKey(!showKey)}
-                                    className="absolute right-3 top-1/2 -translate-y-1/2 p-1 transition-colors"
-                                    style={{ color: 'var(--zen-text-muted)' }}
+                                    onClick={() => setSelectedEngine('google')}
+                                    disabled={!googleAvailable}
+                                    className={`flex-1 px-4 py-3 rounded-xl border-2 text-sm transition-all flex flex-col items-center gap-1 ${
+                                        selectedEngine === 'google'
+                                            ? 'border-rose-400 ring-2 ring-rose-200'
+                                            : ''
+                                    } ${!googleAvailable ? 'opacity-50 cursor-not-allowed' : ''}`}
+                                    style={selectedEngine !== 'google' ? {
+                                        borderColor: 'var(--zen-btn-border)'
+                                    } : undefined}
                                 >
-                                    {showKey ? <IoEyeOff size={18} /> : <IoEye size={18} />}
+                                    <span style={{ color: 'var(--zen-text)' }}>Google Translate</span>
+                                    {!googleAvailable && (
+                                        <span className="text-[10px]" style={{ color: 'var(--zen-text-muted)' }}>Unavailable</span>
+                                    )}
+                                    {googleAvailable && selectedEngine === 'google' && (
+                                        <span className="text-[10px]" style={{ color: 'var(--zen-text-muted)' }}>Free</span>
+                                    )}
+                                </button>
+                                <button
+                                    onClick={() => setSelectedEngine('openai')}
+                                    className={`flex-1 px-4 py-3 rounded-xl border-2 text-sm transition-all flex flex-col items-center gap-1 ${
+                                        selectedEngine === 'openai'
+                                            ? 'border-rose-400 ring-2 ring-rose-200'
+                                            : ''
+                                    }`}
+                                    style={selectedEngine !== 'openai' ? {
+                                        borderColor: 'var(--zen-btn-border)'
+                                    } : undefined}
+                                >
+                                    <span style={{ color: 'var(--zen-text)' }}>OpenAI</span>
+                                    <span className="text-[10px]" style={{ color: 'var(--zen-text-muted)' }}>gpt-5.2</span>
                                 </button>
                             </div>
                         </div>
+
+                        {/* OpenAI API Key */}
+                        {selectedEngine === 'openai' && (
+                            <div className="space-y-2">
+                                <label className="block text-sm font-medium" style={{ color: 'var(--zen-text)' }}>
+                                    OpenAI API Key
+                                </label>
+                                <p className="text-xs mb-2" style={{ color: 'var(--zen-text-muted)' }}>
+                                    Required for OpenAI translation. Get your key from{' '}
+                                    <a 
+                                        href="https://platform.openai.com/api-keys" 
+                                        target="_blank" 
+                                        rel="noopener noreferrer"
+                                        className="text-rose-500 hover:text-rose-600 underline"
+                                    >
+                                        OpenAI Platform
+                                    </a>
+                                </p>
+                                <div className="relative">
+                                    <input
+                                        type={showKey ? 'text' : 'password'}
+                                        value={apiKey}
+                                        onChange={(e) => setApiKey(e.target.value)}
+                                        placeholder="sk-..."
+                                        className="w-full px-4 py-3 pr-12 rounded-xl focus:outline-none focus:ring-2 focus:ring-rose-200 focus:border-rose-300 transition-all"
+                                        style={{
+                                            backgroundColor: 'var(--zen-btn-bg)',
+                                            borderWidth: '1px',
+                                            borderStyle: 'solid',
+                                            borderColor: 'var(--zen-btn-border)',
+                                            color: 'var(--zen-text)',
+                                        }}
+                                    />
+                                    <button
+                                        type="button"
+                                        onClick={() => setShowKey(!showKey)}
+                                        className="absolute right-3 top-1/2 -translate-y-1/2 p-1 transition-colors"
+                                        style={{ color: 'var(--zen-text-muted)' }}
+                                    >
+                                        {showKey ? <IoEyeOff size={18} /> : <IoEye size={18} />}
+                                    </button>
+                                </div>
+                            </div>
+                        )}
                     </div>
 
                     {/* Save message */}

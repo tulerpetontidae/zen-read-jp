@@ -1,0 +1,110 @@
+/**
+ * Translation service supporting multiple engines
+ */
+
+export type TranslationEngine = 'openai' | 'google';
+
+export interface TranslationResult {
+  translation: string;
+  engine: TranslationEngine;
+}
+
+/**
+ * Translate text using Google Translate (Chrome Translator API)
+ */
+export async function translateWithGoogle(text: string): Promise<string | null> {
+  if (typeof self === 'undefined') {
+    return null;
+  }
+
+  if (!('Translator' in self)) {
+    return null;
+  }
+
+  try {
+    // @ts-ignore - Chrome Translator API
+    const Translator = self.Translator;
+
+    // Check if availability method exists
+    if (typeof Translator.availability !== 'function') {
+      console.error('Translator.availability is not a function');
+      return null;
+    }
+
+    // @ts-ignore - Chrome Translator API
+    const availability = await Translator.availability({
+      sourceLanguage: 'ja',
+      targetLanguage: 'en',
+    });
+
+    if (availability === 'unavailable') {
+      return null;
+    }
+
+    // Create a translator instance
+    if (typeof Translator.create !== 'function') {
+      console.error('Translator.create is not a function');
+      return null;
+    }
+
+    // @ts-ignore - Chrome Translator API
+    const translator = await Translator.create({
+      sourceLanguage: 'ja',
+      targetLanguage: 'en',
+    });
+
+    // Translate the text using the instance
+    // @ts-ignore - Chrome Translator API
+    const result = await translator.translate(text);
+
+    return result || null;
+  } catch (error) {
+    console.error('Google Translate error:', error);
+    return null;
+  }
+}
+
+/**
+ * Translate text using OpenAI API
+ */
+export async function translateWithOpenAI(text: string, apiKey: string): Promise<string> {
+  const response = await fetch('/api/translate', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({
+      text,
+      apiKey,
+      engine: 'openai',
+    }),
+  });
+
+  if (!response.ok) {
+    const errorData = await response.json().catch(() => ({}));
+    throw new Error(errorData.error || 'Translation failed');
+  }
+
+  const data = await response.json();
+  return data.translation;
+}
+
+/**
+ * Translate text using the specified engine
+ */
+export async function translate(
+  text: string,
+  engine: TranslationEngine,
+  apiKey?: string
+): Promise<string | null> {
+  if (engine === 'google') {
+    return await translateWithGoogle(text);
+  } else if (engine === 'openai') {
+    if (!apiKey) {
+      throw new Error('OpenAI API key is required');
+    }
+    return await translateWithOpenAI(text, apiKey);
+  }
+  throw new Error(`Unknown translation engine: ${engine}`);
+}
+

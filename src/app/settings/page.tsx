@@ -6,6 +6,8 @@ import Link from 'next/link';
 import { FaChevronLeft } from 'react-icons/fa';
 import { IoEye, IoEyeOff } from 'react-icons/io5';
 import { FONT_OPTIONS, WIDTH_OPTIONS, FONT_SIZE_OPTIONS, THEME_OPTIONS, applyTheme } from '@/components/SettingsModal';
+import { checkGoogleTranslateAvailable } from '@/lib/browser';
+import type { TranslationEngine } from '@/lib/translation';
 
 export default function SettingsPage() {
     const [apiKey, setApiKey] = useState('');
@@ -14,25 +16,46 @@ export default function SettingsPage() {
     const [selectedWidth, setSelectedWidth] = useState('medium');
     const [selectedFontSize, setSelectedFontSize] = useState('medium');
     const [selectedTheme, setSelectedTheme] = useState('light');
+    const [selectedEngine, setSelectedEngine] = useState<TranslationEngine>('openai');
+    const [googleAvailable, setGoogleAvailable] = useState(false);
     const [isSaving, setIsSaving] = useState(false);
     const [saveMessage, setSaveMessage] = useState<string | null>(null);
+
+    // Check Google Translate availability
+    useEffect(() => {
+        checkGoogleTranslateAvailable().then(setGoogleAvailable);
+    }, []);
 
     // Load existing settings on mount
     useEffect(() => {
         const loadSettings = async () => {
             try {
-                const [apiKeySetting, fontSetting, widthSetting, fontSizeSetting, themeSetting] = await Promise.all([
+                const [apiKeySetting, fontSetting, widthSetting, fontSizeSetting, themeSetting, engineSetting] = await Promise.all([
                     db.settings.get('openai_api_key'),
                     db.settings.get('reader_font'),
                     db.settings.get('reader_width'),
                     db.settings.get('reader_font_size'),
                     db.settings.get('theme'),
+                    db.settings.get('translation_engine'),
                 ]);
                 if (apiKeySetting?.value) setApiKey(apiKeySetting.value);
                 if (fontSetting?.value) setSelectedFont(fontSetting.value);
                 if (widthSetting?.value) setSelectedWidth(widthSetting.value);
                 if (fontSizeSetting?.value) setSelectedFontSize(fontSizeSetting.value);
                 if (themeSetting?.value) setSelectedTheme(themeSetting.value);
+                
+                // Determine engine: use saved, or auto-select based on availability
+                if (engineSetting?.value === 'google' || engineSetting?.value === 'openai') {
+                    setSelectedEngine(engineSetting.value as TranslationEngine);
+                } else {
+                    // Auto-select: prefer Google if available, else OpenAI if key exists
+                    const googleAvail = await checkGoogleTranslateAvailable();
+                    if (googleAvail) {
+                        setSelectedEngine('google');
+                    } else if (apiKeySetting?.value) {
+                        setSelectedEngine('openai');
+                    }
+                }
             } catch (e) {
                 console.error('Failed to load settings:', e);
             }
@@ -56,6 +79,7 @@ export default function SettingsPage() {
                 db.settings.put({ key: 'reader_width', value: selectedWidth }),
                 db.settings.put({ key: 'reader_font_size', value: selectedFontSize }),
                 db.settings.put({ key: 'theme', value: selectedTheme }),
+                db.settings.put({ key: 'translation_engine', value: selectedEngine }),
             ]);
             applyTheme(selectedTheme);
             setSaveMessage('Settings saved successfully!');
@@ -218,50 +242,94 @@ export default function SettingsPage() {
                                 Translation Settings
                             </h2>
                             <p className="text-sm" style={{ color: 'var(--zen-text-muted, #78716c)' }}>
-                                Configure your OpenAI API key for paragraph translation.
+                                Choose your translation engine and configure API keys.
                             </p>
                         </div>
 
-                        <div className="space-y-2">
-                            <label className="block text-sm font-medium" style={{ color: 'var(--zen-text, #1c1917)' }}>
-                                OpenAI API Key
-                            </label>
-                            <p className="text-xs mb-2" style={{ color: 'var(--zen-text-muted, #78716c)' }}>
-                                Uses the cost-efficient gpt-5.2 model. Get your key from{' '}
-                                <a 
-                                    href="https://platform.openai.com/api-keys" 
-                                    target="_blank" 
-                                    rel="noopener noreferrer"
-                                    className="text-rose-500 hover:text-rose-600 underline"
-                                >
-                                    OpenAI Platform
-                                </a>
-                            </p>
-                            <div className="relative">
-                                <input
-                                    type={showKey ? 'text' : 'password'}
-                                    value={apiKey}
-                                    onChange={(e) => setApiKey(e.target.value)}
-                                    placeholder="sk-..."
-                                    className="w-full px-4 py-3 pr-12 rounded-xl focus:outline-none focus:ring-2 focus:ring-rose-200 focus:border-rose-300 transition-all"
-                                    style={{
-                                        backgroundColor: 'var(--zen-btn-bg)',
-                                        borderWidth: '1px',
-                                        borderStyle: 'solid',
-                                        borderColor: 'var(--zen-btn-border)',
-                                        color: 'var(--zen-text)',
-                                    }}
-                                />
+                        {/* Translation Engine Selection */}
+                        <div className="space-y-3">
+                            <label className="block text-sm font-medium" style={{ color: 'var(--zen-text, #1c1917)' }}>Translation Engine</label>
+                            <div className="flex gap-3">
                                 <button
-                                    type="button"
-                                    onClick={() => setShowKey(!showKey)}
-                                    className="absolute right-3 top-1/2 -translate-y-1/2 p-1 transition-colors"
-                                    style={{ color: 'var(--zen-text-muted)' }}
+                                    onClick={() => setSelectedEngine('google')}
+                                    disabled={!googleAvailable}
+                                    className={`flex-1 px-4 py-4 rounded-xl border-2 text-sm transition-all flex flex-col items-center gap-2 ${
+                                        selectedEngine === 'google'
+                                            ? 'border-rose-400 ring-2 ring-rose-200'
+                                            : ''
+                                    } ${!googleAvailable ? 'opacity-50 cursor-not-allowed' : ''}`}
+                                    style={selectedEngine !== 'google' ? {
+                                        borderColor: 'var(--zen-border)'
+                                    } : undefined}
                                 >
-                                    {showKey ? <IoEyeOff size={18} /> : <IoEye size={18} />}
+                                    <span style={{ color: 'var(--zen-text)' }}>Google Translate</span>
+                                    {!googleAvailable && (
+                                        <span className="text-xs" style={{ color: 'var(--zen-text-muted)' }}>Unavailable</span>
+                                    )}
+                                    {googleAvailable && selectedEngine === 'google' && (
+                                        <span className="text-xs" style={{ color: 'var(--zen-text-muted)' }}>Free</span>
+                                    )}
+                                </button>
+                                <button
+                                    onClick={() => setSelectedEngine('openai')}
+                                    className={`flex-1 px-4 py-4 rounded-xl border-2 text-sm transition-all flex flex-col items-center gap-2 ${
+                                        selectedEngine === 'openai'
+                                            ? 'border-rose-400 ring-2 ring-rose-200'
+                                            : ''
+                                    }`}
+                                    style={selectedEngine !== 'openai' ? {
+                                        borderColor: 'var(--zen-border)'
+                                    } : undefined}
+                                >
+                                    <span style={{ color: 'var(--zen-text)' }}>OpenAI</span>
+                                    <span className="text-xs" style={{ color: 'var(--zen-text-muted)' }}>gpt-5.2</span>
                                 </button>
                             </div>
                         </div>
+
+                        {/* OpenAI API Key */}
+                        {selectedEngine === 'openai' && (
+                            <div className="space-y-2">
+                                <label className="block text-sm font-medium" style={{ color: 'var(--zen-text, #1c1917)' }}>
+                                    OpenAI API Key
+                                </label>
+                                <p className="text-xs mb-2" style={{ color: 'var(--zen-text-muted, #78716c)' }}>
+                                    Required for OpenAI translation. Get your key from{' '}
+                                    <a 
+                                        href="https://platform.openai.com/api-keys" 
+                                        target="_blank" 
+                                        rel="noopener noreferrer"
+                                        className="text-rose-500 hover:text-rose-600 underline"
+                                    >
+                                        OpenAI Platform
+                                    </a>
+                                </p>
+                                <div className="relative">
+                                    <input
+                                        type={showKey ? 'text' : 'password'}
+                                        value={apiKey}
+                                        onChange={(e) => setApiKey(e.target.value)}
+                                        placeholder="sk-..."
+                                        className="w-full px-4 py-3 pr-12 rounded-xl focus:outline-none focus:ring-2 focus:ring-rose-200 focus:border-rose-300 transition-all"
+                                        style={{
+                                            backgroundColor: 'var(--zen-btn-bg)',
+                                            borderWidth: '1px',
+                                            borderStyle: 'solid',
+                                            borderColor: 'var(--zen-btn-border)',
+                                            color: 'var(--zen-text)',
+                                        }}
+                                    />
+                                    <button
+                                        type="button"
+                                        onClick={() => setShowKey(!showKey)}
+                                        className="absolute right-3 top-1/2 -translate-y-1/2 p-1 transition-colors"
+                                        style={{ color: 'var(--zen-text-muted)' }}
+                                    >
+                                        {showKey ? <IoEyeOff size={18} /> : <IoEye size={18} />}
+                                    </button>
+                                </div>
+                            </div>
+                        )}
                     </div>
                 </div>
 

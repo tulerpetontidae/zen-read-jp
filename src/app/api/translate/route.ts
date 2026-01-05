@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 
 export async function POST(request: NextRequest) {
     try {
-        const { text, apiKey } = await request.json();
+        const { text, apiKey, engine } = await request.json();
 
         if (!text || typeof text !== 'string') {
             return NextResponse.json(
@@ -11,9 +11,18 @@ export async function POST(request: NextRequest) {
             );
         }
 
-        if (!apiKey || typeof apiKey !== 'string') {
+        // Only OpenAI requires API key (Google Translate is client-side only)
+        if ((!engine || engine === 'openai') && (!apiKey || typeof apiKey !== 'string')) {
             return NextResponse.json(
-                { error: 'API key is required' },
+                { error: 'API key is required for OpenAI translation' },
+                { status: 400 }
+            );
+        }
+
+        // Google Translate is client-side only
+        if (engine === 'google') {
+            return NextResponse.json(
+                { error: 'Google Translate is only available client-side' },
                 { status: 400 }
             );
         }

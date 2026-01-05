@@ -2,6 +2,9 @@
 
 import React, { useState, useRef, useEffect } from 'react';
 import { db } from '@/lib/db';
+import { translate, type TranslationEngine } from '@/lib/translation';
+import { checkGoogleTranslateAvailable } from '@/lib/browser';
+import { IoTrashOutline } from 'react-icons/io5';
 
 // Simple hash function for paragraph text
 function hashText(text: string): string {
@@ -130,32 +133,56 @@ export default function TranslatableParagraph({
         setError(null);
 
         try {
-            // Get API key from settings
-            const apiKeySetting = await db.settings.get('openai_api_key');
-            if (!apiKeySetting?.value) {
-                setError('Please set your OpenAI API key in settings');
-                setIsLoading(false);
-                return;
+            // Get translation engine and API key from settings
+            const [engineSetting, apiKeySetting] = await Promise.all([
+                db.settings.get('translation_engine'),
+                db.settings.get('openai_api_key'),
+            ]);
+
+            let selectedEngine: TranslationEngine = 'openai';
+            let apiKey: string | undefined = apiKeySetting?.value;
+
+            // Determine which engine to use
+            if (engineSetting?.value === 'google') {
+                selectedEngine = 'google';
+            } else if (engineSetting?.value === 'openai') {
+                selectedEngine = 'openai';
+            } else {
+                // No engine selected - try to auto-select
+                const googleAvailable = await checkGoogleTranslateAvailable();
+                if (googleAvailable) {
+                    selectedEngine = 'google';
+                } else if (apiKey) {
+                    selectedEngine = 'openai';
+                } else {
+                    setError('Please configure a translation engine in Settings. Google Translate is unavailable in this browser.');
+                    setIsLoading(false);
+                    return;
+                }
             }
 
-            const response = await fetch('/api/translate', {
-                method: 'POST',
-                headers: {
-                    'Content-Type': 'application/json',
-                },
-                body: JSON.stringify({
-                    text: paragraphText,
-                    apiKey: apiKeySetting.value,
-                }),
-            });
-
-            if (!response.ok) {
-                const errorData = await response.json();
-                throw new Error(errorData.error || 'Translation failed');
+            // Validate engine availability
+            if (selectedEngine === 'google') {
+                const googleAvailable = await checkGoogleTranslateAvailable();
+                if (!googleAvailable) {
+                    setError('Google Translate is unavailable in this browser. Please use OpenAI or switch to Chrome.');
+                    setIsLoading(false);
+                    return;
+                }
+            } else if (selectedEngine === 'openai') {
+                if (!apiKey) {
+                    setError('Please set your OpenAI API key in settings');
+                    setIsLoading(false);
+                    return;
+                }
             }
 
-            const data = await response.json();
-            const translatedText = data.translation;
+            // Translate using selected engine
+            const translatedText = await translate(paragraphText, selectedEngine, apiKey);
+
+            if (!translatedText) {
+                throw new Error('Translation failed - no result received');
+            }
 
             // Cache the translation
             await db.translations.put({
@@ -175,6 +202,23 @@ export default function TranslatableParagraph({
         } finally {
             setIsLoading(false);
         }
+    };
+
+    const handleRedoTranslation = async () => {
+        // Clear cached translation
+        try {
+            await db.translations.delete(translationId);
+        } catch (e) {
+            console.error('Failed to clear translation cache:', e);
+        }
+
+        // Reset state
+        setTranslation(null);
+        setShowTranslation(false);
+        setError(null);
+
+        // Retranslate
+        await handleTranslate();
     };
 
     const handleNoteClick = () => {
@@ -331,7 +375,7 @@ export default function TranslatableParagraph({
             {/* Translation display */}
             {showTranslation && translation && (
                 <div 
-                    className="py-2 px-4 border-l-2 rounded-r-lg text-base leading-relaxed animate-in fade-in slide-in-from-top-2 duration-300"
+                    className="relative py-2 pl-4 pr-12 border-l-2 rounded-r-lg text-base leading-relaxed animate-in fade-in slide-in-from-top-2 duration-300"
                     style={{ 
                         fontFamily: 'system-ui, sans-serif', 
                         marginBottom: '2em',
@@ -341,6 +385,16 @@ export default function TranslatableParagraph({
                     }}
                 >
                     {translation}
+                    {/* Redo button - bottom right */}
+                    <button
+                        onClick={handleRedoTranslation}
+                        disabled={isLoading}
+                        className="absolute bottom-2 right-2 p-1.5 rounded-full hover:bg-black/10 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                        style={{ color: 'var(--zen-text-muted, #78716c)' }}
+                        title="Clear and retranslate"
+                    >
+                        <IoTrashOutline size={14} />
+                    </button>
                 </div>
             )}
 
