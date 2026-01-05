@@ -1,36 +1,42 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+# ZenRead
 
-## Getting Started
+A minimalist Japanese EPUB reader with integrated translation and note-taking.
 
-First, run the development server:
+## Features
+
+- **EPUB Reader** — Clean, distraction-free reading with customizable fonts and text width
+- **Reading Progress** — Automatically saves and restores your position in each book
+- **Paragraph Translation** — Hover to reveal translation button, powered by OpenAI gpt-4o-mini
+- **Personal Notes** — Add notes to any paragraph, saved locally
+- **Offline Storage** — All data stored in browser (IndexedDB)
+
+## Installation
 
 ```bash
+npm install
 npm run dev
-# or
-yarn dev
-# or
-pnpm dev
-# or
-bun dev
 ```
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+Open [http://localhost:3000](http://localhost:3000)
 
-You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
+## Usage
 
-This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
+1. **Add a book** — Drag and drop an EPUB file onto the home page
+2. **Configure API key** — Click the settings icon and add your [OpenAI API key](https://platform.openai.com/api-keys)
+3. **Read** — Open a book from your library
+4. **Translate** — Hover left of a paragraph → click the translate icon
+5. **Take notes** — Hover right of a paragraph → click the pencil icon
 
-## Learn More
+## Settings
 
-To learn more about Next.js, take a look at the following resources:
+- **Font** — Noto Serif JP or Shippori Mincho
+- **Text Width** — Narrow (600px), Medium (768px), or Wide (960px)
+- **OpenAI API Key** — Required for translation (uses gpt-4o-mini)
 
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
+## Tech Stack
 
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
+Next.js 16 · React 19 · Tailwind CSS 4 · Dexie (IndexedDB) · epub.js
 
-## Deploy on Vercel
+## License
 
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
-
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
+MIT
