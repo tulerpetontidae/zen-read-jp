@@ -1,5 +1,6 @@
 import type { Metadata } from "next";
 import { Noto_Serif_JP, Noto_Sans_JP } from "next/font/google";
+import { SpeedInsights } from "@vercel/speed-insights/next";
 import "./globals.css";
 import ThemeProvider from "@/components/ThemeProvider";
 
@@ -31,6 +32,7 @@ export default function RootLayout({
         className={`${notoSerifJP.variable} ${notoSansJP.variable} antialiased`}
       >
         <ThemeProvider>{children}</ThemeProvider>
+        <SpeedInsights />
       </body>
     </html>
   );
