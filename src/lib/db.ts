@@ -47,7 +47,7 @@ interface Note {
   updatedAt: number;
 }
 
-const db = new Dexie('ZenReadDB') as Dexie & {
+const db = new Dexie('EnsoReadDB') as Dexie & {
   books: EntityTable<Book, 'id'>;
   progress: EntityTable<Progress, 'bookId'>;
   settings: EntityTable<WebConfig, 'key'>;

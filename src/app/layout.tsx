@@ -18,8 +18,8 @@ const notoSansJP = Noto_Sans_JP({
 });
 
 export const metadata: Metadata = {
-  title: "ZenRead JP",
-  description: "Master Japanese through reading immersion",
+  title: "EnsoRead",
+  description: "Master languages through reading immersion",
 };
 
 export default function RootLayout({

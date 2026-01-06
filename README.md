@@ -1,8 +1,8 @@
 <p align="center">
-  <img src="src/app/landing_zen.svg" width="80" alt="ZenRead">
+  <img src="src/app/landing_zen.svg" width="80" alt="EnsoRead">
 </p>
 
-<h1 align="center">ZenRead</h1>
+<h1 align="center">EnsoRead</h1>
 
 <p align="center">
   A minimalist multi-language EPUB reader for immersive learning.
@@ -16,7 +16,7 @@
 
 ## Philosophy
 
-Originally built for Japanese, ZenRead now supports reading in multiple languages. The core idea remains the same: reading is one of the best ways to improve language comprehension — yet it can be hard to stay focused when every sentence feels like a puzzle.
+EnsoRead supports reading in multiple languages. The core idea is simple: reading is one of the best ways to improve language comprehension — yet it can be hard to stay focused when every sentence feels like a puzzle.
 
 This minimalist tool enables **parallel reading, paragraph by paragraph** — see your target language text alongside instant translations when needed, without losing the narrative flow.
 

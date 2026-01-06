@@ -82,7 +82,7 @@ export default function Home() {
     return () => clearInterval(interval);
   }, []);
 
-  // Typing animation for title (ZenRead [CODE]) with backspace effect
+  // Typing animation for title (EnsoRead [CODE]) with backspace effect
   useEffect(() => {
     const prevIndex = currentLanguageIndex === 0 ? SUPPORTED_LANGUAGES.length - 1 : currentLanguageIndex - 1;
     const prevLang = SUPPORTED_LANGUAGES[prevIndex];
@@ -273,10 +273,10 @@ export default function Home() {
         {/* Header */}
         <header className="mb-16 text-center space-y-6 animate-in fade-in slide-in-from-bottom-8 duration-1000">
           <div className="inline-block mb-4">
-            <img src="/landing_zen.svg" alt="ZenRead" className="w-32 h-32" style={{ filter: 'var(--zen-logo-filter, none)' }} />
+            <img src="/landing_zen.svg" alt="EnsoRead" className="w-32 h-32" style={{ filter: 'var(--zen-logo-filter, none)' }} />
           </div>
           <h1 className="text-6xl md:text-8xl font-serif font-thin tracking-tighter" style={{ color: 'var(--zen-heading, #1c1917)' }}>
-            <span className="inline-block">ZenRead</span>{' '}
+            <span className="inline-block">EnsoRead</span>{' '}
             <span 
               className="text-rose-400 inline-block"
               style={{ 
