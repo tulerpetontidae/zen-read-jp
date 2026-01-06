@@ -162,11 +162,20 @@ export default function ReaderPage({ params }: { params: Promise<{ id: string }>
                     // @ts-ignore
                     const section = bookInstance.spine.get(i);
 
-                    try {
-                        await section.load(bookInstance.load.bind(bookInstance));
-                        const content = section.document;
+                            try {
+                                // Suppress epub.js internal errors
+                                const originalConsoleError = console.error;
+                                console.error = (...args: any[]) => {
+                                    if (args[0]?.message?.includes('replaceCss')) return;
+                                    originalConsoleError(...args);
+                                };
 
-                        if (content) {
+                                await section.load(bookInstance.load.bind(bookInstance));
+                                console.error = originalConsoleError;
+
+                                const content = section.document;
+
+                                if (content) {
                             // 1. Remove stylesheets to prevent 404s and style clashes
                             content.querySelectorAll('link[rel="stylesheet"]').forEach(el => el.remove());
                             content.querySelectorAll('style').forEach(el => el.remove());

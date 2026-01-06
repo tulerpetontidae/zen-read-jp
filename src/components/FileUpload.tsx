@@ -17,11 +17,94 @@ async function extractCoverImage(arrayBuffer: ArrayBuffer): Promise<string | und
         
         // Try to get cover from metadata
         // @ts-ignore
-        const coverUrl = await book.coverUrl();
+        let coverUrl = await book.coverUrl();
+        
+        // If no cover in metadata, try to find first image in content
+        if (!coverUrl) {
+            console.log('No cover in metadata, searching for first image in book...');
+            // @ts-ignore
+            for (let i = 0; i < Math.min(5, book.spine.length); i++) {
+                // @ts-ignore
+                const section = book.spine.get(i);
+                if (!section) continue;
+
+                try {
+                    // Suppress epub.js internal errors
+                    const originalConsoleError = console.error;
+                    console.error = (...args: any[]) => {
+                        if (args[0]?.message?.includes('replaceCss')) return;
+                        originalConsoleError(...args);
+                    };
+
+                    await section.load(book.load.bind(book));
+                    console.error = originalConsoleError;
+
+                    const content = section.document;
+                    if (content) {
+                        const img = content.querySelector('img');
+                        if (img) {
+                            // Get the original src attribute
+                            const imgSrc = img.getAttribute('src') || img.getAttribute('xlink:href');
+                            if (imgSrc) {
+                                // Resolve path relative to section
+                                const sectionPath = section.href || '';
+                                const sectionDir = sectionPath.substring(0, sectionPath.lastIndexOf('/') + 1);
+                                let imagePath = imgSrc;
+                                
+                                // Handle relative paths
+                                if (!imagePath.startsWith('/')) {
+                                    imagePath = sectionDir + imagePath;
+                                }
+                                
+                                // Clean up path (remove leading /)
+                                imagePath = imagePath.replace(/^\//, '');
+                                
+                                console.log('Found image path:', imagePath);
+                                
+                                // Load image from archive
+                                try {
+                                    // @ts-ignore
+                                    const imageData = await book.archive.request(imagePath);
+                                    if (imageData) {
+                                        // Create blob URL
+                                        const mimeType = imagePath.endsWith('.jpg') || imagePath.endsWith('.jpeg') ? 'image/jpeg' : 
+                                                        imagePath.endsWith('.png') ? 'image/png' : 
+                                                        imagePath.endsWith('.gif') ? 'image/gif' : 
+                                                        imagePath.endsWith('.webp') ? 'image/webp' : 'image/jpeg';
+                                        const blob = new Blob([imageData], { type: mimeType });
+                                        coverUrl = URL.createObjectURL(blob);
+                                        console.log('Successfully loaded image from archive');
+                                        break;
+                                    }
+                                } catch (archiveError) {
+                                    console.warn('Failed to load image from archive:', archiveError);
+                                }
+                            }
+                        }
+                    }
+                    section.unload();
+                } catch (e: any) {
+                    if (!e?.message?.includes('replaceCss')) {
+                        console.warn('Error loading section for cover:', e);
+                    }
+                }
+            }
+        }
+        
         if (coverUrl) {
             try {
-                const response = await fetch(coverUrl);
-                const blob = await response.blob();
+                let blob: Blob;
+                
+                // Check if it's a blob URL (from archive) or needs to be fetched
+                if (coverUrl.startsWith('blob:')) {
+                    const response = await fetch(coverUrl);
+                    blob = await response.blob();
+                    URL.revokeObjectURL(coverUrl); // Clean up blob URL
+                } else {
+                    const response = await fetch(coverUrl);
+                    blob = await response.blob();
+                }
+                
                 const result = await new Promise<string>((resolve, reject) => {
                     const reader = new FileReader();
                     reader.onloadend = () => resolve(reader.result as string);
@@ -30,7 +113,8 @@ async function extractCoverImage(arrayBuffer: ArrayBuffer): Promise<string | und
                 });
                 book.destroy();
                 return result;
-            } catch {
+            } catch (e) {
+                console.warn('Cover conversion failed:', e);
                 // Cover fetch failed, continue without cover
             }
         }
