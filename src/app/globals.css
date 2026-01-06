@@ -49,6 +49,7 @@ body {
   /* Progress bar */
   --zen-progress-bg: #e7e5e4;
   --zen-progress-fill: #78716c;
+  --zen-progress-gradient-start: rgba(120, 113, 108, 0.25);
   
   /* Logo */
   --zen-logo-filter: none;
@@ -121,6 +122,7 @@ body {
   /* Progress bar */
   --zen-progress-bg: #D4C9B8;
   --zen-progress-fill: #8B775C;
+  --zen-progress-gradient-start: rgba(139, 119, 92, 0.3);
   
   /* Logo */
   --zen-logo-filter: sepia(20%);
@@ -193,6 +195,7 @@ body {
   /* Progress bar */
   --zen-progress-bg: #262626;
   --zen-progress-fill: #a8a29e;
+  --zen-progress-gradient-start: rgba(168, 162, 158, 0.4);
   
   /* Logo */
   --zen-logo-filter: invert(1) brightness(0.9);

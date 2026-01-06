@@ -45,6 +45,8 @@ npm run dev
 
 Open [localhost:3000](http://localhost:3000), drop in an EPUB, and start reading.
 
+By default, you'll find a fragment of *The Tale of Genji* (源氏物語) to explore the features. The rest of the EPUB is on you to find — read what you like!
+
 
 
 ## Recommended

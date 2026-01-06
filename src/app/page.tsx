@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useEffect } from "react";
+import React, { useState, useEffect } from "react";
 import FileUpload from "@/components/FileUpload";
 import { useLiveQuery } from "dexie-react-hooks";
 import { db } from "@/lib/db";
@@ -8,7 +8,9 @@ import Link from "next/link";
 import { FaBook } from "react-icons/fa";
 import { RiDeleteBinLine, RiPencilLine } from "react-icons/ri";
 import { IoSettingsOutline } from "react-icons/io5";
+import { FaGithub } from "react-icons/fa";
 import ePub from "epubjs";
+import { initializeDefaultBook } from "@/lib/initDefaultBook";
 
 // Extract cover image from EPUB (best effort)
 async function extractCoverImage(arrayBuffer: ArrayBuffer): Promise<string | undefined> {
@@ -44,9 +46,26 @@ async function extractCoverImage(arrayBuffer: ArrayBuffer): Promise<string | und
 
 export default function Home() {
   const books = useLiveQuery(() => db.books.toArray());
+  const allProgress = useLiveQuery(() => db.progress.toArray());
+  
+  // Create progress map
+  const progressMap = React.useMemo(() => {
+    if (!allProgress || !books) return {};
+    const map: Record<string, number> = {};
+    allProgress.forEach(p => {
+      map[p.bookId] = p.scrollPosition;
+    });
+    return map;
+  }, [allProgress, books]);
+  
   const [editingId, setEditingId] = useState<string | null>(null);
   const [editTitle, setEditTitle] = useState("");
   const [updatingCovers, setUpdatingCovers] = useState(false);
+
+  // Initialize default book on first load
+  useEffect(() => {
+    initializeDefaultBook();
+  }, []);
 
   // Update missing covers for existing books
   useEffect(() => {
@@ -174,6 +193,33 @@ export default function Home() {
                 >
                   <div className="absolute inset-0 opacity-0 group-hover:opacity-100 transition-opacity duration-500" style={{ background: 'var(--zen-card-hover-gradient, linear-gradient(to top, rgba(255,255,255,0.9), transparent))' }} />
 
+                  {/* Progress Indicator - gradient from bottom to top */}
+                  {progressMap[book.id] > 0 && (
+                    <div 
+                      className="absolute inset-0 pointer-events-none rounded-3xl"
+                      style={{
+                        background: `linear-gradient(to top, 
+                          var(--zen-progress-gradient-start) 0%, 
+                          var(--zen-progress-gradient-start) ${progressMap[book.id]}%, 
+                          transparent ${progressMap[book.id]}%, 
+                          transparent 100%)`
+                      }}
+                    />
+                  )}
+
+                  {/* Progress Percentage */}
+                  {progressMap[book.id] > 0 && (
+                    <div 
+                      className="absolute bottom-4 right-4 z-10 text-xs font-light tracking-wider"
+                      style={{ 
+                        color: 'var(--zen-text-muted)',
+                        opacity: 0.8
+                      }}
+                    >
+                      {progressMap[book.id]}%
+                    </div>
+                  )}
+
                   {/* Book Cover */}
                   <div className="flex-1 flex items-center justify-center mb-4">
                     {book.coverImage ? (
@@ -238,6 +284,20 @@ export default function Home() {
             </div>
           </section>
         )}
+
+        {/* Footer with GitHub link */}
+        <footer className="mt-32 pb-4 text-center">
+          <a
+            href="https://github.com/tulerpetontidae/zen-read-jp"
+            target="_blank"
+            rel="noopener noreferrer"
+            className="inline-flex flex-col items-center gap-1.5 transition-colors hover:opacity-80"
+            style={{ color: 'var(--zen-text-muted)' }}
+          >
+            <FaGithub size={20} />
+            <span className="text-xs">tulerpetontidae/zen-read-jp</span>
+          </a>
+        </footer>
       </main>
     </div>
   );
