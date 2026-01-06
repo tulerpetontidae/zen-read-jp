@@ -22,70 +22,116 @@ async function extractCoverImage(arrayBuffer: ArrayBuffer): Promise<string | und
         // If no cover in metadata, try to find first image in content
         if (!coverUrl) {
             console.log('No cover in metadata, searching for first image in book...');
-            // @ts-ignore
-            for (let i = 0; i < Math.min(5, book.spine.length); i++) {
+            
+            // First, try to find any image files directly in the archive
+            try {
                 // @ts-ignore
-                const section = book.spine.get(i);
-                if (!section) continue;
+                const files = Object.keys(book.archive.zip.files);
+                console.log('Archive files:', files.length);
+                
+                // Look for common image paths
+                const imageFile = files.find(f => 
+                    /\.(jpg|jpeg|png|gif|webp)$/i.test(f) && 
+                    !f.includes('thumbnail') &&
+                    (f.includes('cover') || f.includes('image') || f.includes('img'))
+                );
+                
+                if (imageFile) {
+                    console.log('Found image file in archive:', imageFile);
+                    // @ts-ignore
+                    const zipFile = book.archive.zip.file(imageFile);
+                    if (zipFile) {
+                        const arrayBuffer = await zipFile.async('arraybuffer');
+                        if (arrayBuffer) {
+                            const mimeType = imageFile.endsWith('.jpg') || imageFile.endsWith('.jpeg') ? 'image/jpeg' : 
+                                            imageFile.endsWith('.png') ? 'image/png' : 
+                                            imageFile.endsWith('.gif') ? 'image/gif' : 
+                                            imageFile.endsWith('.webp') ? 'image/webp' : 'image/jpeg';
+                            const blob = new Blob([arrayBuffer], { type: mimeType });
+                            coverUrl = URL.createObjectURL(blob);
+                            console.log('Successfully loaded image from archive');
+                        }
+                    }
+                }
+            } catch (e) {
+                console.warn('Failed to search archive for images:', e);
+            }
+            
+            // If still no cover, try parsing content
+            if (!coverUrl) {
+                // @ts-ignore
+                for (let i = 0; i < Math.min(5, book.spine.length); i++) {
+                    // @ts-ignore
+                    const section = book.spine.get(i);
+                    if (!section) continue;
 
-                try {
-                    // Suppress epub.js internal errors
-                    const originalConsoleError = console.error;
-                    console.error = (...args: any[]) => {
-                        if (args[0]?.message?.includes('replaceCss')) return;
-                        originalConsoleError(...args);
-                    };
+                    try {
+                        // Suppress epub.js internal errors completely
+                        const originalConsoleError = console.error;
+                        console.error = () => {}; // Suppress all errors during this operation
 
-                    await section.load(book.load.bind(book));
-                    console.error = originalConsoleError;
+                        await section.load(book.load.bind(book));
+                        console.error = originalConsoleError;
 
-                    const content = section.document;
-                    if (content) {
-                        const img = content.querySelector('img');
-                        if (img) {
-                            // Get the original src attribute
-                            const imgSrc = img.getAttribute('src') || img.getAttribute('xlink:href');
-                            if (imgSrc) {
-                                // Resolve path relative to section
-                                const sectionPath = section.href || '';
-                                const sectionDir = sectionPath.substring(0, sectionPath.lastIndexOf('/') + 1);
-                                let imagePath = imgSrc;
-                                
-                                // Handle relative paths
-                                if (!imagePath.startsWith('/')) {
-                                    imagePath = sectionDir + imagePath;
-                                }
-                                
-                                // Clean up path (remove leading /)
-                                imagePath = imagePath.replace(/^\//, '');
-                                
-                                console.log('Found image path:', imagePath);
-                                
-                                // Load image from archive
-                                try {
-                                    // @ts-ignore
-                                    const imageData = await book.archive.request(imagePath);
-                                    if (imageData) {
-                                        // Create blob URL
-                                        const mimeType = imagePath.endsWith('.jpg') || imagePath.endsWith('.jpeg') ? 'image/jpeg' : 
-                                                        imagePath.endsWith('.png') ? 'image/png' : 
-                                                        imagePath.endsWith('.gif') ? 'image/gif' : 
-                                                        imagePath.endsWith('.webp') ? 'image/webp' : 'image/jpeg';
-                                        const blob = new Blob([imageData], { type: mimeType });
-                                        coverUrl = URL.createObjectURL(blob);
-                                        console.log('Successfully loaded image from archive');
-                                        break;
+                        const content = section.document;
+                        if (content) {
+                            const img = content.querySelector('img');
+                            if (img) {
+                                const imgSrc = img.getAttribute('src') || img.getAttribute('xlink:href');
+                                if (imgSrc) {
+                                    console.log('Found img src in content:', imgSrc);
+                                    const sectionPath = section.href || '';
+                                    const sectionDir = sectionPath.substring(0, sectionPath.lastIndexOf('/') + 1);
+                                    let imagePath = imgSrc;
+                                    
+                                    if (!imagePath.startsWith('/')) {
+                                        imagePath = sectionDir + imagePath;
                                     }
-                                } catch (archiveError) {
-                                    console.warn('Failed to load image from archive:', archiveError);
+                                    imagePath = imagePath.replace(/^\//, '');
+                                    
+                                    console.log('Resolved image path:', imagePath);
+                                    
+                                    try {
+                                        // @ts-ignore
+                                        let zipFile = book.archive.zip.file(imagePath);
+                                        
+                                        // Try alternative paths if not found
+                                        if (!zipFile) {
+                                            const filename = imagePath.split('/').pop();
+                                            // @ts-ignore
+                                            const files = Object.keys(book.archive.zip.files);
+                                            const match = files.find(f => f.endsWith(filename));
+                                            if (match) {
+                                                console.log('Found alternative path:', match);
+                                                // @ts-ignore
+                                                zipFile = book.archive.zip.file(match);
+                                            }
+                                        }
+                                        
+                                        if (zipFile) {
+                                            const arrayBuffer = await zipFile.async('arraybuffer');
+                                            if (arrayBuffer) {
+                                                const mimeType = imagePath.endsWith('.jpg') || imagePath.endsWith('.jpeg') ? 'image/jpeg' : 
+                                                                imagePath.endsWith('.png') ? 'image/png' : 
+                                                                imagePath.endsWith('.gif') ? 'image/gif' : 
+                                                                imagePath.endsWith('.webp') ? 'image/webp' : 'image/jpeg';
+                                                const blob = new Blob([arrayBuffer], { type: mimeType });
+                                                coverUrl = URL.createObjectURL(blob);
+                                                console.log('Successfully loaded image from archive');
+                                                break;
+                                            }
+                                        } else {
+                                            console.warn('Image file not found in archive:', imagePath);
+                                        }
+                                    } catch (archiveError) {
+                                        console.warn('Failed to load image from archive:', archiveError);
+                                    }
                                 }
                             }
                         }
-                    }
-                    section.unload();
-                } catch (e: any) {
-                    if (!e?.message?.includes('replaceCss')) {
-                        console.warn('Error loading section for cover:', e);
+                        section.unload();
+                    } catch (e: any) {
+                        // Silently ignore all errors
                     }
                 }
             }

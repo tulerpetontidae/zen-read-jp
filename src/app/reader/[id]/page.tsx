@@ -135,7 +135,7 @@ export default function ReaderPage({ params }: { params: Promise<{ id: string }>
             }
             return undefined;
         }
-    }), [id, showAllTranslations, showAllComments]);
+    }), [id, showAllTranslations, showAllComments, zenMode]);
 
     useEffect(() => {
         let bookInstance: Book | null = null;

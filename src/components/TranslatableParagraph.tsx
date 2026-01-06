@@ -86,27 +86,31 @@ export default function TranslatableParagraph({
         loadCachedData();
     }, [translationId, noteId]);
     
-    // Track if user manually toggled translation
-    const [manuallyToggledTranslation, setManuallyToggledTranslation] = useState(false);
+    // Track previous showAll states to detect changes
+    const prevShowAllTranslationsRef = useRef(showAllTranslations);
+    const prevShowAllCommentsRef = useRef(showAllComments);
     
-    // Show translation if showAllTranslations is true and translation exists
+    // When showAllTranslations changes, always override local state
     useEffect(() => {
-        if (showAllTranslations && translation) {
-            setShowTranslation(true);
-        } else if (!showAllTranslations) {
-            // Hide if "show all" is off (unless manually toggled, but we'll reset that)
-            setShowTranslation(false);
-            setManuallyToggledTranslation(false);
+        // Only react to actual changes in the prop
+        if (prevShowAllTranslationsRef.current !== showAllTranslations) {
+            prevShowAllTranslationsRef.current = showAllTranslations;
+            if (showAllTranslations && translation) {
+                setShowTranslation(true);
+            } else if (!showAllTranslations) {
+                setShowTranslation(false);
+            }
         }
     }, [showAllTranslations, translation]);
     
-    // Show note if showAllComments is true and note exists
+    // When showAllComments changes, always override local state
     useEffect(() => {
-        if (showAllComments && savedNoteContent) {
-            setIsNoteOpen(true);
-        } else if (!showAllComments) {
-            // Hide if "show all" is off (only if there's no active editing)
-            if (!noteContent.trim() || noteContent === savedNoteContent) {
+        // Only react to actual changes in the prop
+        if (prevShowAllCommentsRef.current !== showAllComments) {
+            prevShowAllCommentsRef.current = showAllComments;
+            if (showAllComments && savedNoteContent) {
+                setIsNoteOpen(true);
+            } else if (!showAllComments) {
                 setIsNoteOpen(false);
             }
         }
@@ -163,7 +167,6 @@ export default function TranslatableParagraph({
         // If we already have a translation, just toggle display
         if (translation) {
             setShowTranslation(!showTranslation);
-            setManuallyToggledTranslation(!showTranslation); // Track manual toggle
             return;
         }
 
