@@ -87,11 +87,11 @@ export async function initializeDefaultBook(): Promise<void> {
       // Use the same approach as the reader page
       // @ts-ignore
       for (let i = 0; i < book.spine.length; i++) {
+        // @ts-ignore
+        const section = book.spine.get(i);
+        if (!section) continue;
+        
         try {
-          // @ts-ignore
-          const section = book.spine.get(i);
-          if (!section) continue;
-          
           await section.load(book.load.bind(book));
           const content = section.document;
           
@@ -118,26 +118,8 @@ export async function initializeDefaultBook(): Promise<void> {
           
           if (firstParagraph) break;
         } catch (e: any) {
-          // Ignore replaceCss and other epub.js internal errors
-          if (e?.message?.includes('replaceCss')) {
-            // Try to continue - the document might still be usable
-            try {
-              const content = section?.document;
-              if (content) {
-                const paragraphs = content.querySelectorAll('p');
-                for (const p of paragraphs) {
-                  const text = p.textContent?.trim() || '';
-                  if (text.length > 50 && /[\u3040-\u309F\u30A0-\u30FF\u4E00-\u9FAF]/.test(text)) {
-                    firstParagraph = text;
-                    break;
-                  }
-                }
-              }
-              if (firstParagraph) break;
-            } catch {
-              // Continue to next section
-            }
-          } else {
+          // Ignore replaceCss and other epub.js internal errors - just continue to next section
+          if (!e?.message?.includes('replaceCss')) {
             console.warn('Error loading section:', e);
           }
           continue;
