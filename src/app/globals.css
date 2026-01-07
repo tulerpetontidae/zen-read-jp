@@ -17,6 +17,10 @@ body {
   font-family: Arial, Helvetica, sans-serif;
 }
 
+.macron-o {
+  font-family: var(--font-noto-serif-jp), var(--font-noto-serif), serif;
+}
+
 /* Theme: Light (default warm cream) */
 .theme-light {
   /* Backgrounds */

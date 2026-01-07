@@ -2,14 +2,14 @@
   <img src="src/app/landing_zen.svg" width="80" alt="EnsoRead">
 </p>
 
-<h1 align="center">EnsoRead</h1>
+<h1 align="center">EnsōRead</h1>
 
 <p align="center">
   A minimalist multi-language EPUB reader for immersive learning.
 </p>
 
 <p align="center">
-  <a href="https://zen-read-jp.vercel.app">zen-read-jp.vercel.app</a>
+  <a href="https://enso-read.vercel.app">enso-read.vercel.app</a>
 </p>
 
 

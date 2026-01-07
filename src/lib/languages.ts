@@ -95,8 +95,14 @@ export function getLanguageName(code: string): string {
 
 /**
  * Get language code for display (uppercase)
+ * Maps ja -> JP and zh -> CN for display purposes
  */
 export function getLanguageCode(code: string): string {
-  return code.toUpperCase();
+  const displayCodeMap: Record<string, string> = {
+    'ja': 'JP',
+    'zh': 'CN',
+  };
+  
+  return displayCodeMap[code] || code.toUpperCase();
 }
 

@@ -65,14 +65,14 @@ export default function Home() {
   const [editTitle, setEditTitle] = useState("");
   const [updatingCovers, setUpdatingCovers] = useState(false);
   const [currentLanguageIndex, setCurrentLanguageIndex] = useState(0);
-  const [titleTypingText, setTitleTypingText] = useState("JA");
+  const [titleTypingText, setTitleTypingText] = useState("JP");
   const [masterTypingText, setMasterTypingText] = useState("日本語");
   const [editingLanguageId, setEditingLanguageId] = useState<string | null>(null);
   const [editLanguage, setEditLanguage] = useState("");
 
   // Find longest language name for fixed width
   const longestLanguageName = getLongestLanguageName();
-  const longestLanguageCode = "ZH"; // All codes are 2 chars, but ZH is widest visually
+  const longestLanguageCode = "CN"; // All codes are 2 chars, but CN is widest visually
 
   // Language cycling animation with typing effect
   useEffect(() => {
@@ -276,7 +276,7 @@ export default function Home() {
             <img src="/landing_zen.svg" alt="EnsoRead" className="w-32 h-32" style={{ filter: 'var(--zen-logo-filter, none)' }} />
           </div>
           <h1 className="text-6xl md:text-8xl font-serif font-thin tracking-tighter" style={{ color: 'var(--zen-heading, #1c1917)' }}>
-            <span className="inline-block">EnsoRead</span>{' '}
+            <span className="inline-block">Ens<span className="macron-o">ō</span>Read</span>{' '}
             <span 
               className="text-rose-400 inline-block"
               style={{ 
@@ -528,14 +528,14 @@ export default function Home() {
         {/* Footer with GitHub link */}
         <footer className="mt-32 pb-4 text-center">
           <a
-            href="https://github.com/tulerpetontidae/zen-read-jp"
+            href="https://github.com/tulerpetontidae/enso-read"
             target="_blank"
             rel="noopener noreferrer"
             className="inline-flex flex-col items-center gap-1.5 transition-colors hover:opacity-80"
             style={{ color: 'var(--zen-text-muted)' }}
           >
             <FaGithub size={20} />
-            <span className="text-xs">tulerpetontidae/zen-read-jp</span>
+            <span className="text-xs">tulerpetontidae/enso-read</span>
           </a>
         </footer>
       </main>
