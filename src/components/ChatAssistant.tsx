@@ -69,8 +69,9 @@ export default function ChatAssistant({
       }));
 
       // Check for API key and add warning if needed
-      const apiKeySetting = await db.settings.get('openai_api_key');
-      if (!apiKeySetting?.value) {
+      const { getApiKey } = await import('@/lib/apiKeyStorage');
+      const apiKeyValue = await getApiKey();
+      if (!apiKeyValue) {
         // Only show warning if there are no existing messages
         if (loadedMessages.length === 0) {
           const warningMessage: ChatMessage = {
@@ -151,9 +152,10 @@ export default function ChatAssistant({
     setIsLoading(true);
 
     try {
-      // Get API key from settings
-      const apiKeySetting = await db.settings.get('openai_api_key');
-      if (!apiKeySetting?.value) {
+      // Get API key from storage (memory or IndexedDB)
+      const { getApiKey } = await import('@/lib/apiKeyStorage');
+      const apiKeyValue = await getApiKey();
+      if (!apiKeyValue) {
         throw new Error('OpenAI API key not found. Please set it in Settings.');
       }
 
@@ -174,7 +176,7 @@ export default function ChatAssistant({
           messages: conversationHistory,
           sourceText: paragraphText,
           translation: translation || undefined,
-          apiKey: apiKeySetting.value,
+          apiKey: apiKeyValue,
         }),
       });
 

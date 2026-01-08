@@ -50,6 +50,7 @@ interface SettingsModalProps {
 export default function SettingsModal({ isOpen, onClose, onSettingsChange }: SettingsModalProps) {
     const [apiKey, setApiKey] = useState('');
     const [showKey, setShowKey] = useState(false);
+    const [apiKeyStorageMode, setApiKeyStorageMode] = useState<'temporary' | 'persistent'>('temporary');
     const [selectedFont, setSelectedFont] = useState('noto-serif');
     const [selectedWidth, setSelectedWidth] = useState('medium');
     const [selectedFontSize, setSelectedFontSize] = useState('medium');
@@ -81,8 +82,10 @@ export default function SettingsModal({ isOpen, onClose, onSettingsChange }: Set
         if (isOpen) {
             const loadSettings = async () => {
                 try {
-                    const [apiKeySetting, fontSetting, widthSetting, fontSizeSetting, themeSetting, engineSetting, targetLangSetting] = await Promise.all([
-                        db.settings.get('openai_api_key'),
+                    const { getApiKey, getStorageMode } = await import('@/lib/apiKeyStorage');
+                    const [apiKeyValue, storageMode, fontSetting, widthSetting, fontSizeSetting, themeSetting, engineSetting, targetLangSetting] = await Promise.all([
+                        getApiKey(),
+                        getStorageMode(),
                         db.settings.get('reader_font'),
                         db.settings.get('reader_width'),
                         db.settings.get('reader_font_size'),
@@ -104,12 +107,13 @@ export default function SettingsModal({ isOpen, onClose, onSettingsChange }: Set
                         const googleAvail = await checkGoogleTranslateAvailable();
                         if (googleAvail) {
                             engine = 'google';
-                        } else if (apiKeySetting?.value) {
+                        } else if (apiKeyValue) {
                             engine = 'openai';
                         }
                     }
                     
-                    if (apiKeySetting?.value) setApiKey(apiKeySetting.value);
+                    if (apiKeyValue) setApiKey(apiKeyValue);
+                    setApiKeyStorageMode(storageMode);
                     const targetLang = targetLangSetting?.value || 'en';
                     setSelectedFont(font);
                     setSelectedWidth(width);
@@ -147,8 +151,13 @@ export default function SettingsModal({ isOpen, onClose, onSettingsChange }: Set
         setSaveMessage(null);
 
         try {
+            const { setApiKey: saveApiKey, setStorageMode } = await import('@/lib/apiKeyStorage');
+            
+            // Save API key with selected storage mode
+            await saveApiKey(apiKey, apiKeyStorageMode);
+            await setStorageMode(apiKeyStorageMode);
+            
             await Promise.all([
-                db.settings.put({ key: 'openai_api_key', value: apiKey.trim() }),
                 db.settings.put({ key: 'reader_font', value: selectedFont }),
                 db.settings.put({ key: 'reader_width', value: selectedWidth }),
                 db.settings.put({ key: 'reader_font_size', value: selectedFontSize }),
@@ -435,6 +444,45 @@ export default function SettingsModal({ isOpen, onClose, onSettingsChange }: Set
                                         OpenAI Platform
                                     </a>
                                 </p>
+                                {/* Storage Mode Selection */}
+                                <div className="space-y-2 mb-3">
+                                    <label className="block text-xs font-medium" style={{ color: 'var(--zen-text)' }}>
+                                        Storage Mode
+                                    </label>
+                                    <div className="flex flex-col gap-2">
+                                        <label className="flex items-center text-xs cursor-pointer">
+                                            <input
+                                                type="radio"
+                                                name="apiKeyStorage"
+                                                value="temporary"
+                                                checked={apiKeyStorageMode === 'temporary'}
+                                                onChange={(e) => setApiKeyStorageMode(e.target.value as 'temporary' | 'persistent')}
+                                                className="mr-2"
+                                            />
+                                            <span style={{ color: 'var(--zen-text)' }}>
+                                                Temporary (this session) — Recommended
+                                            </span>
+                                        </label>
+                                        <label className="flex items-center text-xs cursor-pointer">
+                                            <input
+                                                type="radio"
+                                                name="apiKeyStorage"
+                                                value="persistent"
+                                                checked={apiKeyStorageMode === 'persistent'}
+                                                onChange={(e) => setApiKeyStorageMode(e.target.value as 'temporary' | 'persistent')}
+                                                className="mr-2"
+                                            />
+                                            <span style={{ color: 'var(--zen-text)' }}>
+                                                Save on this device
+                                            </span>
+                                        </label>
+                                    </div>
+                                    {apiKeyStorageMode === 'persistent' && (
+                                        <p className="text-xs mt-1" style={{ color: 'var(--zen-text-muted)' }}>
+                                            ⚠️ Stored locally on this device. Browser tools or extensions may read it.
+                                        </p>
+                                    )}
+                                </div>
                                 <div className="relative">
                                     <input
                                         type={showKey ? 'text' : 'password'}

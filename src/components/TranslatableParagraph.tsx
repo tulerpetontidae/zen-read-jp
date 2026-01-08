@@ -205,15 +205,16 @@ export default function TranslatableParagraph({
 
         try {
             // Get translation engine, API key, target language, and book source language
-            const [engineSetting, apiKeySetting, targetLangSetting, book] = await Promise.all([
+            const { getApiKey } = await import('@/lib/apiKeyStorage');
+            const [engineSetting, apiKeyValue, targetLangSetting, book] = await Promise.all([
                 db.settings.get('translation_engine'),
-                db.settings.get('openai_api_key'),
+                getApiKey(),
                 db.settings.get('target_language'),
                 db.books.get(bookId),
             ]);
 
             let selectedEngine: TranslationEngine = 'openai';
-            let apiKey: string | undefined = apiKeySetting?.value;
+            let apiKey: string | undefined = apiKeyValue || undefined;
             const targetLanguage = targetLangSetting?.value || 'en';
             const sourceLanguage = book?.sourceLanguage || 'ja'; // Default to Japanese for backward compatibility
 
