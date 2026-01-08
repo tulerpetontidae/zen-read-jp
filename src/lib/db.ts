@@ -57,6 +57,24 @@ interface ChatMessage {
   createdAt: number;
 }
 
+interface BookmarkGroup {
+  id: string; // UUID
+  name: string; // user-editable name
+  color: string; // hex color code
+  order: number; // display order
+  createdAt: number;
+  updatedAt: number;
+}
+
+interface Bookmark {
+  id: string; // bookId + paragraphHash
+  bookId: string;
+  paragraphHash: string;
+  colorGroupId: string; // references bookmarkGroups.id
+  createdAt: number;
+  updatedAt: number;
+}
+
 const db = new Dexie('EnsoReadDB') as Dexie & {
   books: EntityTable<Book, 'id'>;
   progress: EntityTable<Progress, 'bookId'>;
@@ -65,6 +83,8 @@ const db = new Dexie('EnsoReadDB') as Dexie & {
   translations: EntityTable<Translation, 'id'>;
   notes: EntityTable<Note, 'id'>;
   chats: EntityTable<ChatMessage, 'id'>;
+  bookmarkGroups: EntityTable<BookmarkGroup, 'id'>;
+  bookmarks: EntityTable<Bookmark, 'id'>;
 };
 
 // Schema declaration
@@ -114,5 +134,47 @@ db.version(6).stores({
   chats: 'id, threadId, bookId, paragraphHash, createdAt'
 });
 
-export type { Book, Progress, WebConfig, DictionaryEntry, Translation, Note, ChatMessage };
+db.version(7).stores({
+  books: 'id, title, addedAt, sourceLanguage',
+  progress: 'bookId, updatedAt',
+  settings: 'key',
+  dictionary: '++id, kanji, reading, *tags',
+  translations: 'id, bookId, paragraphHash, createdAt',
+  notes: 'id, bookId, paragraphHash, updatedAt',
+  chats: 'id, threadId, bookId, paragraphHash, createdAt',
+  bookmarkGroups: 'id, order',
+  bookmarks: 'id, bookId, paragraphHash, colorGroupId'
+}).upgrade(async (tx) => {
+  // Initialize default bookmark groups if they don't exist
+  const existingGroups = await tx.table('bookmarkGroups').count();
+  if (existingGroups === 0) {
+    const { v4: uuidv4 } = await import('uuid');
+    const defaultGroups: BookmarkGroup[] = [
+      { id: uuidv4(), name: 'Group 1', color: '#3b82f6', order: 0, createdAt: Date.now(), updatedAt: Date.now() },
+      { id: uuidv4(), name: 'Group 2', color: '#10b981', order: 1, createdAt: Date.now(), updatedAt: Date.now() },
+      { id: uuidv4(), name: 'Group 3', color: '#f59e0b', order: 2, createdAt: Date.now(), updatedAt: Date.now() },
+      { id: uuidv4(), name: 'Group 4', color: '#ef4444', order: 3, createdAt: Date.now(), updatedAt: Date.now() },
+      { id: uuidv4(), name: 'Group 5', color: '#8b5cf6', order: 4, createdAt: Date.now(), updatedAt: Date.now() },
+    ];
+    await tx.table('bookmarkGroups').bulkAdd(defaultGroups);
+  }
+});
+
+// Initialize default bookmark groups on first load (if not already done)
+export async function initializeBookmarkGroups(): Promise<void> {
+  const count = await db.bookmarkGroups.count();
+  if (count === 0) {
+    const { v4: uuidv4 } = await import('uuid');
+    const defaultGroups: BookmarkGroup[] = [
+      { id: uuidv4(), name: 'Group 1', color: '#3b82f6', order: 0, createdAt: Date.now(), updatedAt: Date.now() },
+      { id: uuidv4(), name: 'Group 2', color: '#10b981', order: 1, createdAt: Date.now(), updatedAt: Date.now() },
+      { id: uuidv4(), name: 'Group 3', color: '#f59e0b', order: 2, createdAt: Date.now(), updatedAt: Date.now() },
+      { id: uuidv4(), name: 'Group 4', color: '#ef4444', order: 3, createdAt: Date.now(), updatedAt: Date.now() },
+      { id: uuidv4(), name: 'Group 5', color: '#8b5cf6', order: 4, createdAt: Date.now(), updatedAt: Date.now() },
+    ];
+    await db.bookmarkGroups.bulkAdd(defaultGroups);
+  }
+}
+
+export type { Book, Progress, WebConfig, DictionaryEntry, Translation, Note, ChatMessage, BookmarkGroup, Bookmark };
 export { db };

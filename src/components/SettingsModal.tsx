@@ -39,12 +39,34 @@ export const THEME_OPTIONS = [
 export function applyTheme(theme: string) {
     document.documentElement.classList.remove('theme-light', 'theme-sepia', 'theme-dark');
     document.documentElement.classList.add(`theme-${theme}`);
+    // Cache theme in localStorage for instant loading
+    if (typeof window !== 'undefined') {
+        try {
+            localStorage.setItem('enso-read-theme', theme);
+        } catch (e) {
+            // localStorage might be disabled
+        }
+    }
 }
 
 interface SettingsModalProps {
     isOpen: boolean;
     onClose: () => void;
     onSettingsChange?: () => void;
+}
+
+// Get initial theme from localStorage synchronously
+function getInitialTheme(): string {
+    if (typeof window === 'undefined') return 'light';
+    try {
+        const theme = localStorage.getItem('enso-read-theme');
+        if (theme && ['light', 'sepia', 'dark'].includes(theme)) {
+            return theme;
+        }
+    } catch (e) {
+        // localStorage might be disabled
+    }
+    return 'light';
 }
 
 export default function SettingsModal({ isOpen, onClose, onSettingsChange }: SettingsModalProps) {
@@ -54,7 +76,7 @@ export default function SettingsModal({ isOpen, onClose, onSettingsChange }: Set
     const [selectedFont, setSelectedFont] = useState('noto-serif');
     const [selectedWidth, setSelectedWidth] = useState('medium');
     const [selectedFontSize, setSelectedFontSize] = useState('medium');
-    const [selectedTheme, setSelectedTheme] = useState('light');
+    const [selectedTheme, setSelectedTheme] = useState(getInitialTheme);
     const [selectedEngine, setSelectedEngine] = useState<TranslationEngine>('openai');
     const [targetLanguage, setTargetLanguage] = useState<string>('en');
     const [googleAvailable, setGoogleAvailable] = useState(false);

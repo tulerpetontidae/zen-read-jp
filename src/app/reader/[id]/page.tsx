@@ -69,11 +69,12 @@ export default function ReaderPage({ params }: { params: Promise<{ id: string }>
     const [showAllTranslations, setShowAllTranslations] = useState(false);
     const [showAllComments, setShowAllComments] = useState(false);
     const [showAllChats, setShowAllChats] = useState(false);
-    const [commentPositions, setCommentPositions] = useState<Array<{ top: number; height: number }>>([]);
-    const [showCommentIndicators, setShowCommentIndicators] = useState(false); // Toggle: ON = show on scroll, OFF = never show
+    const [bookmarkPositions, setBookmarkPositions] = useState<Array<{ top: number; height: number; color: string }>>([]);
+    const [showBookmarkIndicators, setShowBookmarkIndicators] = useState(false); // Toggle: ON = show on scroll, OFF = never show
     const [indicatorsVisible, setIndicatorsVisible] = useState(false); // Actual visibility state (for auto-hide)
     const [zenMode, setZenMode] = useState(false);
     const [notesVersion, setNotesVersion] = useState(0);
+    const [bookmarksVersion, setBookmarksVersion] = useState(0);
 
     // Load reader settings
     const loadReaderSettings = useCallback(async () => {
@@ -160,6 +161,7 @@ export default function ReaderPage({ params }: { params: Promise<{ id: string }>
                                 showAllChats={showAllChats}
                                 zenMode={zenMode}
                                 onNoteChange={() => setNotesVersion(prev => prev + 1)}
+                                onBookmarkChange={() => setBookmarksVersion(prev => prev + 1)}
                             >
                                 {getParagraphWrapper(domNode, children)}
                             </TranslatableParagraph>
@@ -168,8 +170,8 @@ export default function ReaderPage({ params }: { params: Promise<{ id: string }>
                 }
             }
             return undefined;
-        }
-    }), [id, showAllTranslations, showAllComments, showAllChats, zenMode]);
+            }
+        }), [id, showAllTranslations, showAllComments, showAllChats, zenMode, bookmarksVersion]);
 
     useEffect(() => {
         let bookInstance: Book | null = null;
@@ -364,7 +366,7 @@ export default function ReaderPage({ params }: { params: Promise<{ id: string }>
                 debouncedSave(roundedPct);
 
                 // Show indicators on scroll if toggle is ON
-                if (showCommentIndicators) {
+                if (showBookmarkIndicators) {
                     setIndicatorsVisible(true);
 
                     // Hide after 1 second of no scrolling
@@ -384,30 +386,35 @@ export default function ReaderPage({ params }: { params: Promise<{ id: string }>
                 if (hideTimeout) clearTimeout(hideTimeout);
             };
         }
-    }, [id, showCommentIndicators]); // Removed sections to keep dependency array stable
+    }, [id, showBookmarkIndicators]); // Removed sections to keep dependency array stable
     
-    // Track comment positions for scrollbar indicators (static, relative to document)
+    // Track bookmark positions for scrollbar indicators (static, relative to document)
     useEffect(() => {
-        const updateCommentPositions = async () => {
+        const updateBookmarkPositions = async () => {
             if (!containerRef.current || sections.length === 0) return;
-            
+
             try {
-                // Get all notes for this book
-                const allNotes = await db.notes.where('bookId').equals(id).toArray();
-                if (allNotes.length === 0) {
-                    setCommentPositions([]);
+                // Get all bookmarks for this book
+                const allBookmarks = await db.bookmarks.where('bookId').equals(id).toArray();
+                if (allBookmarks.length === 0) {
+                    setBookmarkPositions([]);
                     return;
                 }
                 
-                // Find paragraph elements with notes
+                // Get all bookmark groups to map colorGroupId to color
+                const allGroups = await db.bookmarkGroups.toArray();
+                const groupColorMap = new Map(allGroups.map(g => [g.id, g.color]));
+                
+                // Find paragraph elements with bookmarks
                 const container = containerRef.current;
-                const positions: Array<{ top: number; height: number }> = [];
+                const positions: Array<{ top: number; height: number; color: string }> = [];
                 
                 // Query all TranslatableParagraph containers
                 const paragraphContainers = container.querySelectorAll('[data-paragraph-hash]');
                 paragraphContainers.forEach((el) => {
                     const hash = el.getAttribute('data-paragraph-hash');
-                    if (hash && allNotes.some(note => note.paragraphHash === hash)) {
+                    const bookmark = allBookmarks.find(b => b.paragraphHash === hash);
+                    if (bookmark) {
                         // Get absolute position within the scrollable container (relative to document top)
                         const rect = el.getBoundingClientRect();
                         const containerRect = container.getBoundingClientRect();
@@ -416,24 +423,28 @@ export default function ReaderPage({ params }: { params: Promise<{ id: string }>
                         // Calculate position relative to document top within container
                         const absoluteTop = rect.top - containerRect.top + scrollTop;
                         
+                        // Get color from group
+                        const color = groupColorMap.get(bookmark.colorGroupId) || '#f59e0b'; // Default to amber if group not found
+                        
                         positions.push({
                             top: absoluteTop,
                             height: rect.height,
+                            color,
                         });
                     }
                 });
                 
-                setCommentPositions(positions);
+                setBookmarkPositions(positions);
             } catch (e) {
-                console.error('Failed to update comment positions:', e);
+                console.error('Failed to update bookmark positions:', e);
             }
         };
         
         // Update positions when sections change or after content loads
-        const timeout = setTimeout(updateCommentPositions, 1000);
+        const timeout = setTimeout(updateBookmarkPositions, 1000);
         
         return () => clearTimeout(timeout);
-    }, [sections, id, notesVersion]);
+    }, [sections, id, bookmarksVersion]);
 
     return (
         <div className="fixed inset-0 flex flex-col" style={{ backgroundColor: 'var(--zen-reader-bg, #FDFBF7)' }}>
@@ -507,16 +518,16 @@ export default function ReaderPage({ params }: { params: Promise<{ id: string }>
                             </svg>
                         </button>
                     )}
-                    {/* Show comment indicators button (hidden in zen mode) */}
+                    {/* Show bookmark indicators button (hidden in zen mode) */}
                     {!zenMode && (
                         <button
-                            onClick={() => setShowCommentIndicators(!showCommentIndicators)}
+                            onClick={() => setShowBookmarkIndicators(!showBookmarkIndicators)}
                             className="p-1.5 transition-colors rounded"
                             style={{ 
-                                color: showCommentIndicators ? 'var(--zen-text, #1c1917)' : 'var(--zen-text-muted, #78716c)',
-                                backgroundColor: showCommentIndicators ? 'var(--zen-accent-bg, rgba(255,255,255,0.5))' : 'transparent'
+                                color: showBookmarkIndicators ? 'var(--zen-text, #1c1917)' : 'var(--zen-text-muted, #78716c)',
+                                backgroundColor: showBookmarkIndicators ? 'var(--zen-accent-bg, rgba(255,255,255,0.5))' : 'transparent'
                             }}
-                            title="Show comment markers on scrollbar"
+                            title="Show bookmarks on scrollbar"
                         >
                             <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
                                 <rect x="3" y="3" width="18" height="18" rx="2" ry="2" />
@@ -560,8 +571,8 @@ export default function ReaderPage({ params }: { params: Promise<{ id: string }>
                     scrollbarColor: 'var(--zen-progress-bg, #e7e5e4) transparent',
                 }}
             >
-                {/* Scrollbar indicators for comments - static markers on scrollbar track (hidden in zen mode, shown on scroll if toggle is ON) */}
-                {!zenMode && showCommentIndicators && indicatorsVisible && commentPositions.length > 0 && containerRef.current && (() => {
+                {/* Scrollbar indicators for bookmarks - static markers on scrollbar track (hidden in zen mode, shown on scroll if toggle is ON) */}
+                {!zenMode && showBookmarkIndicators && indicatorsVisible && bookmarkPositions.length > 0 && containerRef.current && (() => {
                     const container = containerRef.current;
                     if (!container) return null;
                     
@@ -585,7 +596,7 @@ export default function ReaderPage({ params }: { params: Promise<{ id: string }>
                                 zIndex: 15, // Below progress bar (z-20)
                             }}
                         >
-                            {commentPositions.map((pos, idx) => {
+                            {bookmarkPositions.map((pos, idx) => {
                                 // Position relative to total document height (not viewport)
                                 // This creates static markers on the scrollbar track
                                 const indicatorTopPercent = (pos.top / scrollHeight) * 100;
@@ -598,11 +609,11 @@ export default function ReaderPage({ params }: { params: Promise<{ id: string }>
                                         style={{
                                             top: `${indicatorTopPercent}%`,
                                             height: `${Math.max(0.5, indicatorHeightPercent)}%`,
+                                            backgroundColor: `${pos.color}99`, // 60% opacity
                                             width: '100%',
                                             right: '0',
-                                            backgroundColor: 'rgba(250, 204, 21, 0.6)', // Non-transparent yellow
-                                            backdropFilter: 'blur(4px)',
-                                            boxShadow: '0 0 2px rgba(250, 204, 21, 0.5)',
+                                            backdropFilter: 'blur(2px)',
+                                            boxShadow: `0 0 2px ${pos.color}80`,
                                         }}
                                     />
                                 );

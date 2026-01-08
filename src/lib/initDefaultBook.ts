@@ -69,7 +69,7 @@ export async function initializeDefaultBook(): Promise<void> {
     const bookId = uuidv4();
     await db.books.add({
       id: bookId,
-      title: '源氏物語 桐壺',
+      title: '源氏物語 桐壺 (sample)',
       data: arrayBuffer,
       addedAt: Date.now(),
       coverImage,

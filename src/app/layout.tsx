@@ -1,4 +1,5 @@
 import type { Metadata } from "next";
+import Script from "next/script";
 import { Noto_Serif_JP, Noto_Sans_JP, Noto_Serif } from "next/font/google";
 import { SpeedInsights } from "@vercel/speed-insights/next";
 import { Analytics } from "@vercel/analytics/next";
@@ -30,10 +31,29 @@ export const metadata: Metadata = {
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {
   return (
-    <html lang="en" className="theme-light">
+    <html lang="en" className="theme-light" suppressHydrationWarning>
       <body
         className={`${notoSerifJP.variable} ${notoSerif.variable} ${notoSansJP.variable} antialiased`}
       >
+        <Script
+          id="theme-loader"
+          strategy="beforeInteractive"
+          dangerouslySetInnerHTML={{
+            __html: `
+              (function() {
+                try {
+                  var theme = localStorage.getItem('enso-read-theme');
+                  if (theme && ['light', 'sepia', 'dark'].includes(theme)) {
+                    document.documentElement.classList.remove('theme-light', 'theme-sepia', 'theme-dark');
+                    document.documentElement.classList.add('theme-' + theme);
+                  }
+                } catch (e) {
+                  // localStorage might be disabled, use default
+                }
+              })();
+            `,
+          }}
+        />
         <ThemeProvider>{children}</ThemeProvider>
         <SpeedInsights />
         <Analytics />

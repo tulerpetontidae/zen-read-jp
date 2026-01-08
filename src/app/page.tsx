@@ -12,6 +12,7 @@ import { IoSettingsOutline } from "react-icons/io5";
 import { FaGithub } from "react-icons/fa";
 import ePub from "epubjs";
 import { initializeDefaultBook } from "@/lib/initDefaultBook";
+import { initializeBookmarkGroups } from "@/lib/db";
 import { SUPPORTED_LANGUAGES, getLanguageName, getLanguageCode, getLongestLanguageName, LANGUAGE_MAP } from "@/lib/languages";
 
 // Extract cover image from EPUB (best effort)
@@ -178,9 +179,10 @@ export default function Home() {
     };
   }, [currentLanguageIndex]);
 
-  // Initialize default book on first load
+  // Initialize default book and bookmark groups on first load
   useEffect(() => {
     initializeDefaultBook();
+    initializeBookmarkGroups();
   }, []);
 
   // Update missing covers for existing books

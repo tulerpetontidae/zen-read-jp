@@ -4,8 +4,9 @@ import React, { useState, useRef, useEffect } from 'react';
 import { db } from '@/lib/db';
 import { translate, type TranslationEngine } from '@/lib/translation';
 import { checkGoogleTranslateAvailable } from '@/lib/browser';
-import { IoTrashOutline, IoChatbubbleOutline } from 'react-icons/io5';
+import { IoTrashOutline, IoChatbubbleOutline, IoBookmark, IoBookmarkOutline } from 'react-icons/io5';
 import ChatAssistant from './ChatAssistant';
+import BookmarkSelector from './BookmarkSelector';
 
 // Simple hash function for paragraph text
 function hashText(text: string): string {
@@ -27,6 +28,7 @@ interface TranslatableParagraphProps {
     showAllChats?: boolean;
     zenMode?: boolean;
     onNoteChange?: () => void;
+    onBookmarkChange?: () => void;
 }
 
 export default function TranslatableParagraph({ 
@@ -37,13 +39,15 @@ export default function TranslatableParagraph({
     showAllComments = false,
     showAllChats = false,
     zenMode = false,
-    onNoteChange
+    onNoteChange,
+    onBookmarkChange
 }: TranslatableParagraphProps) {
     // Hover state
     const [isHovered, setIsHovered] = useState(false);
     const [isButtonHovered, setIsButtonHovered] = useState(false);
     const [isNoteButtonHovered, setIsNoteButtonHovered] = useState(false);
     const [isChatButtonHovered, setIsChatButtonHovered] = useState(false);
+    const [isBookmarkButtonHovered, setIsBookmarkButtonHovered] = useState(false);
     
     // Translation state
     const [translation, setTranslation] = useState<string | null>(null);
@@ -62,6 +66,11 @@ export default function TranslatableParagraph({
     const [isChatOpen, setIsChatOpen] = useState(false);
     const [hasChat, setHasChat] = useState(false);
     
+    // Bookmark state
+    const [isBookmarkSelectorOpen, setIsBookmarkSelectorOpen] = useState(false);
+    const [currentBookmarkGroupId, setCurrentBookmarkGroupId] = useState<string | null>(null);
+    const [bookmarkGroupColor, setBookmarkGroupColor] = useState<string | null>(null);
+    
     const containerRef = useRef<HTMLDivElement>(null);
     const noteTextareaRef = useRef<HTMLTextAreaElement>(null);
     const hoverTimeoutRef = useRef<NodeJS.Timeout | null>(null);
@@ -70,15 +79,17 @@ export default function TranslatableParagraph({
     const translationId = `${bookId}-${paragraphHash}`;
     const noteId = `${bookId}-${paragraphHash}`;
     const threadId = `${bookId}|${paragraphHash}`;
+    const bookmarkId = `${bookId}-${paragraphHash}`;
 
-    // Check for cached translation, note, and chat on mount
+    // Check for cached translation, note, chat, and bookmark on mount
     useEffect(() => {
         const loadCachedData = async () => {
             try {
-                const [cachedTranslation, cachedNote, chatMessages] = await Promise.all([
+                const [cachedTranslation, cachedNote, chatMessages, cachedBookmark] = await Promise.all([
                     db.translations.get(translationId),
                     db.notes.get(noteId),
                     db.chats.where('threadId').equals(threadId).toArray(),
+                    db.bookmarks.get(bookmarkId),
                 ]);
                 if (cachedTranslation) {
                     setTranslation(cachedTranslation.translatedText);
@@ -94,12 +105,28 @@ export default function TranslatableParagraph({
                 if (chatMessages && chatMessages.length > 0) {
                     setHasChat(true);
                 }
+                if (cachedBookmark) {
+                    setCurrentBookmarkGroupId(cachedBookmark.colorGroupId);
+                    // Load the bookmark group to get the color
+                    try {
+                        const group = await db.bookmarkGroups.get(cachedBookmark.colorGroupId);
+                        if (group) {
+                            setBookmarkGroupColor(group.color);
+                        } else {
+                            // Group might have been deleted, clear bookmark
+                            setCurrentBookmarkGroupId(null);
+                            setBookmarkGroupColor(null);
+                        }
+                    } catch (e) {
+                        console.error('Failed to load bookmark group:', e);
+                    }
+                }
             } catch (e) {
                 console.error('Failed to load cached data:', e);
             }
         };
         loadCachedData();
-    }, [translationId, noteId, threadId]);
+    }, [translationId, noteId, threadId, bookmarkId]);
     
     // Track previous showAll states to detect changes
     const prevShowAllTranslationsRef = useRef(showAllTranslations);
@@ -348,9 +375,42 @@ export default function TranslatableParagraph({
         }
     };
 
-    const showButtons = isHovered || isButtonHovered || isNoteButtonHovered || isChatButtonHovered || isNoteOpen || isChatOpen;
+    const showButtons = isHovered || isButtonHovered || isNoteButtonHovered || isChatButtonHovered || isBookmarkButtonHovered || isNoteOpen || isChatOpen || isBookmarkSelectorOpen;
     const hasTranslation = !!translation;
     const hasNote = !!savedNoteContent;
+    const hasBookmark = !!currentBookmarkGroupId;
+    
+    const handleBookmarkClick = (e: React.MouseEvent) => {
+        e.preventDefault();
+        e.stopPropagation();
+        setIsBookmarkSelectorOpen(!isBookmarkSelectorOpen);
+    };
+
+    const handleBookmarkSelect = async (colorGroupId: string | null) => {
+        if (colorGroupId) {
+            // Load the bookmark group to get the color first
+            try {
+                const group = await db.bookmarkGroups.get(colorGroupId);
+                if (group) {
+                    setBookmarkGroupColor(group.color);
+                    setCurrentBookmarkGroupId(colorGroupId);
+                } else {
+                    console.error('Bookmark group not found:', colorGroupId);
+                    setCurrentBookmarkGroupId(null);
+                    setBookmarkGroupColor(null);
+                }
+            } catch (e) {
+                console.error('Failed to load bookmark group:', e);
+                setCurrentBookmarkGroupId(null);
+                setBookmarkGroupColor(null);
+            }
+        } else {
+            setCurrentBookmarkGroupId(null);
+            setBookmarkGroupColor(null);
+        }
+        setIsBookmarkSelectorOpen(false);
+        if (onBookmarkChange) onBookmarkChange();
+    };
     
     const handleChatClick = (e: React.MouseEvent) => {
         e.preventDefault();
@@ -388,6 +448,45 @@ export default function TranslatableParagraph({
             onMouseEnter={handleMouseEnter}
             onMouseLeave={handleMouseLeave}
         >
+            {/* Bookmark button - right side, between paragraph and note/chat buttons (hidden in zen mode) */}
+            {!zenMode && (
+                <button
+                    onClick={handleBookmarkClick}
+                    onMouseEnter={() => setIsBookmarkButtonHovered(true)}
+                    onMouseLeave={() => setIsBookmarkButtonHovered(false)}
+                    className={`
+                        absolute -right-24 top-1 
+                        w-8 h-8 
+                        flex items-center justify-center 
+                        rounded-full 
+                        transition-all duration-300 ease-out
+                        ${(showButtons || hasBookmark) ? 'opacity-100 translate-x-0' : 'opacity-0 translate-x-2'}
+                        focus:outline-none focus:ring-2 focus:ring-rose-200
+                    `}
+                    style={{
+                        boxShadow: (showButtons || hasBookmark) ? '0 4px 12px rgba(0,0,0,0.08)' : 'none',
+                        backgroundColor: hasBookmark && bookmarkGroupColor
+                            ? `${bookmarkGroupColor}20` // 20% opacity
+                            : 'var(--zen-btn-bg, rgba(255, 255, 255, 0.9))',
+                        borderWidth: hasBookmark ? '2px' : '1px',
+                        borderStyle: 'solid',
+                        borderColor: hasBookmark && bookmarkGroupColor
+                            ? bookmarkGroupColor
+                            : 'var(--zen-btn-border, rgba(0, 0, 0, 0.1))',
+                        color: hasBookmark && bookmarkGroupColor
+                            ? bookmarkGroupColor
+                            : 'var(--zen-btn-text, rgba(0, 0, 0, 0.5))',
+                    }}
+                    title={hasBookmark ? 'Change bookmark' : 'Bookmark paragraph'}
+                >
+                    {hasBookmark ? (
+                        <IoBookmark size={16} />
+                    ) : (
+                        <IoBookmarkOutline size={16} />
+                    )}
+                </button>
+            )}
+
             {/* Translation button - left side (hidden in zen mode) */}
             {!zenMode && (
                 <button
@@ -566,6 +665,17 @@ export default function TranslatableParagraph({
                         <IoTrashOutline size={14} />
                     </button>
                 </div>
+            )}
+
+            {/* Bookmark Selector (hidden in zen mode) */}
+            {!zenMode && isBookmarkSelectorOpen && (
+                <BookmarkSelector
+                    bookId={bookId}
+                    paragraphHash={paragraphHash}
+                    currentColorGroupId={currentBookmarkGroupId}
+                    onSelect={handleBookmarkSelect}
+                    onClose={() => setIsBookmarkSelectorOpen(false)}
+                />
             )}
 
             {/* Chat Assistant (hidden in zen mode) */}
