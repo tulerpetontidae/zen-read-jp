@@ -36,8 +36,9 @@ interface TranslatableParagraphProps {
     cachedBookmark?: { colorGroupId: string } | null;
     cachedHasChat?: boolean;
     bookmarkGroupMap?: Map<string, { name: string; color: string }>;
-    // Callbacks for data updates (to update lookup maps in parent)
-    onTranslationUpdate?: (paragraphHash: string, translation: { translatedText: string; originalText: string } | null) => void;
+        // Callbacks for data updates (to update lookup maps in parent)
+        onTranslationUpdate?: (paragraphHash: string, translation: { translatedText: string; originalText: string } | null) => void;
+        onTranslationError?: (paragraphHash: string, error: string | null) => void; // New callback for errors
     onNoteUpdate?: (paragraphHash: string, note: { content: string; height?: number } | null) => void;
     onBookmarkUpdate?: (paragraphHash: string, bookmark: { colorGroupId: string } | null) => void;
     onChatUpdate?: (threadId: string, hasChat: boolean) => void;
@@ -62,13 +63,14 @@ const TranslatableParagraph = React.memo(function TranslatableParagraph({
     cachedBookmark = null,
     cachedHasChat = false,
     bookmarkGroupMap = new Map(),
-    onTranslationUpdate,
-    onNoteUpdate,
-    onBookmarkUpdate,
-    onChatUpdate,
-    onOpenBottomPanel,
-    activeParagraphHash = null,
-    onParagraphActivate,
+        onTranslationUpdate,
+        onTranslationError,
+        onNoteUpdate,
+        onBookmarkUpdate,
+        onChatUpdate,
+        onOpenBottomPanel,
+        activeParagraphHash = null,
+        onParagraphActivate,
 }: TranslatableParagraphProps) {
     const isMobile = useIsMobile();
     
@@ -429,6 +431,10 @@ const TranslatableParagraph = React.memo(function TranslatableParagraph({
             if (onTranslationUpdate) {
                 onTranslationUpdate(paragraphHash, { translatedText, originalText: paragraphText });
             }
+            // Clear any previous errors
+            if (onTranslationError) {
+                onTranslationError(paragraphHash, null);
+            }
 
             setTranslation(translatedText);
             // On mobile, translation is shown in bottom panel, not inline
@@ -437,7 +443,16 @@ const TranslatableParagraph = React.memo(function TranslatableParagraph({
             }
         } catch (e) {
             console.error('Translation error:', e);
-            setError(e instanceof Error ? e.message : 'Translation failed');
+            const errorMessage = e instanceof Error ? e.message : 'Translation failed';
+            setError(errorMessage);
+            // Pass error to parent for mobile bottom panel display
+            if (onTranslationError) {
+                onTranslationError(paragraphHash, errorMessage);
+            }
+            // Clear translation from map
+            if (onTranslationUpdate) {
+                onTranslationUpdate(paragraphHash, null);
+            }
         } finally {
             setIsLoading(false);
         }
@@ -671,11 +686,17 @@ const TranslatableParagraph = React.memo(function TranslatableParagraph({
                 paddingLeft: isMobile ? '48px' : '60px', 
                 paddingRight: isMobile ? '48px' : '60px',
                 backgroundColor: isActiveParagraph && isMobile && !zenMode 
-                    ? 'var(--zen-accent-bg, rgba(255, 241, 242, 0.3))' 
+                    ? 'rgba(251, 191, 36, 0.08)' // Less strong yellow tint
                     : 'transparent',
                 borderRadius: isActiveParagraph && isMobile && !zenMode ? '8px' : '0',
                 paddingTop: isActiveParagraph && isMobile && !zenMode ? '8px' : '0',
                 paddingBottom: isActiveParagraph && isMobile && !zenMode ? '8px' : '0',
+                borderLeft: isActiveParagraph && isMobile && !zenMode 
+                    ? '3px solid rgba(251, 191, 36, 0.3)' 
+                    : 'none',
+                maxWidth: '100%',
+                boxSizing: 'border-box',
+                overflowWrap: 'break-word',
             }}
             onMouseEnter={handleMouseEnter}
             onMouseLeave={handleMouseLeave}
@@ -684,6 +705,7 @@ const TranslatableParagraph = React.memo(function TranslatableParagraph({
             {/* Mobile: Translate button - left side */}
             {!zenMode && isMobile && (
                 <button
+                    data-translate-button
                     onClick={(e) => {
                         e.preventDefault();
                         e.stopPropagation();
@@ -1203,8 +1225,8 @@ const TranslatableParagraph = React.memo(function TranslatableParagraph({
                 </div>
             )}
 
-            {/* Error display */}
-            {error && (
+            {/* Error display - only on mobile (desktop shows errors in bottom panel) */}
+            {error && isMobile && (
                 <div className="mt-2 p-3 bg-red-50 border border-red-200 rounded-lg text-red-600 text-sm">
                     {error}
                 </div>

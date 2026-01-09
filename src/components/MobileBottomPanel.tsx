@@ -126,7 +126,7 @@ export default function MobileBottomPanel({
     }
   }, [panelState, isOpen, partialHeight, fullHeight, collapsedHeight]);
 
-  // Determine panel state based on height
+  // Determine panel state based on height (for UI purposes like backdrop)
   const updatePanelState = useCallback((height: number) => {
     const threshold1 = collapsedHeight + 50; // Small buffer for collapsed
     const threshold2 = (partialHeight + fullHeight) / 2;
@@ -138,6 +138,7 @@ export default function MobileBottomPanel({
     } else {
       setPanelState('full');
     }
+    // Note: We don't change currentHeight here - it stays at the dragged height
   }, [collapsedHeight, partialHeight, fullHeight]);
 
   // Handle drag start (touch or mouse)
@@ -171,36 +172,25 @@ export default function MobileBottomPanel({
     setDragStartY(null);
     document.body.style.userSelect = '';
 
-    // Snap to nearest state based on final height
-    const threshold1 = (collapsedHeight + partialHeight) / 2;
-    const threshold2 = (partialHeight + fullHeight) / 2;
-    
-    let targetHeight = finalHeight;
-    let targetState: PanelState = 'partial';
-    
-    if (finalHeight < threshold1) {
-      // Snap to collapsed or close
-      if (finalHeight < collapsedHeight + 20) {
-        onClose();
-        return;
-      } else {
-        targetHeight = collapsedHeight;
-        targetState = 'collapsed';
-      }
-    } else if (finalHeight < threshold2) {
-      // Snap to partial
-      targetHeight = partialHeight;
-      targetState = 'partial';
-    } else {
-      // Snap to full
-      targetHeight = fullHeight;
-      targetState = 'full';
+    // Close if below one line of text height (< 150px)
+    if (finalHeight < 150) {
+      // Close if dragged below 150px (one line of text)
+      onClose();
+      return;
     }
     
-    // Set the final height and state
-    setCurrentHeight(targetHeight);
-    setPanelState(targetState);
-  }, [currentHeight, collapsedHeight, partialHeight, fullHeight, onClose]);
+    // If > 2/3 of viewport, snap to full screen
+    const twoThirdsHeight = viewportHeight * (2/3);
+    if (finalHeight > twoThirdsHeight) {
+      setCurrentHeight(fullHeight);
+      setPanelState('full');
+      return;
+    }
+    
+    // Keep the current height (allow arbitrary sizes below 2/3)
+    // Only update state for UI purposes (backdrop, etc.)
+    updatePanelState(finalHeight);
+  }, [currentHeight, collapsedHeight, viewportHeight, fullHeight, onClose, updatePanelState]);
 
   // Touch event handlers - use native event listeners to avoid passive event issues
   useEffect(() => {
@@ -341,15 +331,18 @@ export default function MobileBottomPanel({
               borderBottomStyle: 'solid',
               borderBottomColor: 'var(--zen-note-border, #fde68a)',
               touchAction: 'none', // Prevent default touch behaviors
+              paddingTop: '16px', // Increased padding for easier grabbing
+              paddingBottom: '12px',
+              minHeight: '64px', // Minimum height for easier touch target
             }}
           >
             {/* Handle indicator - draggable area */}
             <div
-              className="w-12 h-1 rounded-full my-2"
+              className="w-12 h-1.5 rounded-full my-2"
               onClick={handleDoubleTap}
               style={{
                 backgroundColor: 'var(--zen-text-muted, #78716c)',
-                opacity: 0.3,
+                opacity: 0.4,
               }}
             />
             {/* Tabs */}

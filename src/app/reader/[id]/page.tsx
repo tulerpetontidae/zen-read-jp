@@ -188,7 +188,8 @@ export default function ReaderPage({ params }: { params: Promise<{ id: string }>
     const [activeTranslationParagraphHash, setActiveTranslationParagraphHash] = useState<string | null>(null);
     
     // Batch-loaded data lookup maps (Phase 1: Batch Database Queries)
-    const [translationMap, setTranslationMap] = useState<Map<string, { translatedText: string; originalText: string }>>(new Map());
+    const [translationMap, setTranslationMap] = useState<Map<string, { translatedText: string; originalText: string; error?: string }>>(new Map());
+    const [translationErrors, setTranslationErrors] = useState<Map<string, string>>(new Map()); // Store errors separately
     const [noteMap, setNoteMap] = useState<Map<string, { content: string; height?: number }>>(new Map());
     const [bookmarkMap, setBookmarkMap] = useState<Map<string, { colorGroupId: string }>>(new Map());
     const [chatMap, setChatMap] = useState<Map<string, boolean>>(new Map()); // Maps threadId to hasChat boolean
@@ -401,6 +402,16 @@ export default function ReaderPage({ params }: { params: Promise<{ id: string }>
                                         newMap.delete(hash);
                                     }
                                     setTranslationMap(newMap);
+                                }}
+                                onTranslationError={(hash, error) => {
+                                    // Update error map
+                                    const newErrorMap = new Map(translationErrors);
+                                    if (error) {
+                                        newErrorMap.set(hash, error);
+                                    } else {
+                                        newErrorMap.delete(hash);
+                                    }
+                                    setTranslationErrors(newErrorMap);
                                 }}
                                 onNoteUpdate={(hash, note) => {
                                     // Update map when note is added/updated/deleted
@@ -909,7 +920,7 @@ export default function ReaderPage({ params }: { params: Promise<{ id: string }>
     }, [sections, id, bookmarksVersion]);
 
     return (
-        <div className="fixed inset-0 flex flex-col" style={{ backgroundColor: 'var(--zen-reader-bg, #FDFBF7)' }}>
+        <div className="fixed inset-0 flex flex-col overflow-hidden" style={{ backgroundColor: 'var(--zen-reader-bg, #FDFBF7)' }}>
             {/* Header - always visible */}
             <header className="h-14 flex items-center justify-between px-4 shrink-0 border-b relative z-10 transition-colors" style={{ borderColor: 'var(--zen-border, rgba(0,0,0,0.1))' }}>
                 {/* Left side - back button and title (hidden in zen mode) */}
@@ -1030,7 +1041,7 @@ export default function ReaderPage({ params }: { params: Promise<{ id: string }>
 
             <main
                 ref={containerRef}
-                className="flex-1 min-h-0 overflow-y-auto scroll-smooth relative"
+                className="flex-1 min-h-0 overflow-y-auto overflow-x-hidden scroll-smooth relative"
                 style={{
                     scrollbarWidth: 'thin',
                     scrollbarColor: 'var(--zen-progress-bg, #e7e5e4) transparent',
@@ -1096,7 +1107,9 @@ export default function ReaderPage({ params }: { params: Promise<{ id: string }>
                     style={{ 
                         maxWidth: isMobile ? '100%' : currentWidth.maxWidth,
                         paddingLeft: isMobile ? '0' : '64px',
-                        paddingRight: isMobile ? '0' : '0'
+                        paddingRight: isMobile ? '0' : '0',
+                        width: '100%',
+                        boxSizing: 'border-box',
                     }}
                 >
                     {sections.map((section) => (
@@ -1111,7 +1124,10 @@ export default function ReaderPage({ params }: { params: Promise<{ id: string }>
                                 padding: isMobile ? '10px 4px' : '10px 40px',
                                 textAlign: isMobile ? 'center' : 'left',
                                 wordBreak: 'break-word',
-                                transition: 'font-size 0.2s ease'
+                                overflowWrap: 'break-word',
+                                transition: 'font-size 0.2s ease',
+                                maxWidth: '100%',
+                                boxSizing: 'border-box',
                             }}
                         >
                             {parse(section.html, parserOptions)}
@@ -1182,7 +1198,171 @@ export default function ReaderPage({ params }: { params: Promise<{ id: string }>
                 <MobileBottomPanel
                     isOpen={bottomPanelOpen}
                     activeTab={bottomPanelTab}
-                    onTabChange={setBottomPanelTab}
+                    onTabChange={(tab) => {
+                        setBottomPanelTab(tab);
+                        // When switching tabs, ensure we have an active paragraph
+                        // If no active paragraph, use the first one with content or create new
+                        if (!activeParagraphHash && containerRef.current) {
+                            // Find the first paragraph element
+                            const firstParagraph = containerRef.current.querySelector('[data-paragraph-hash]') as HTMLElement;
+                            if (firstParagraph) {
+                                const hash = firstParagraph.getAttribute('data-paragraph-hash');
+                                if (hash) {
+                                    setActiveParagraphHash(hash);
+                                    // Set the appropriate active content based on tab
+                                    if (tab === 'translation') {
+                                        setActiveTranslationParagraphHash(hash);
+                                    } else if (tab === 'chat') {
+                                        setActiveChatParagraphHash(hash);
+                                    } else if (tab === 'note') {
+                                        const note = noteMap.get(hash);
+                                        const noteId = `${id}-${hash}`;
+                                        if (note) {
+                                            setActiveNoteContent({
+                                                content: note.content,
+                                                paragraphHash: hash,
+                                                onUpdate: async (content: string) => {
+                                                    try {
+                                                        if (content.trim()) {
+                                                            await db.notes.put({
+                                                                id: noteId,
+                                                                bookId: id,
+                                                                paragraphHash: hash,
+                                                                content,
+                                                                height: note.height || 80,
+                                                                createdAt: note.height ? Date.now() : Date.now(),
+                                                                updatedAt: Date.now(),
+                                                            });
+                                                            const newMap = new Map(noteMap);
+                                                            newMap.set(hash, { ...note, content });
+                                                            setNoteMap(newMap);
+                                                            setNotesVersion(prev => prev + 1);
+                                                        } else {
+                                                            await db.notes.delete(noteId);
+                                                            const newMap = new Map(noteMap);
+                                                            newMap.delete(hash);
+                                                            setNoteMap(newMap);
+                                                            setNotesVersion(prev => prev + 1);
+                                                        }
+                                                    } catch (e) {
+                                                        console.error('Failed to save note:', e);
+                                                    }
+                                                }
+                                            });
+                                        } else {
+                                            setActiveNoteContent({
+                                                content: '',
+                                                paragraphHash: hash,
+                                                onUpdate: async (content: string) => {
+                                                    try {
+                                                        if (content.trim()) {
+                                                            await db.notes.put({
+                                                                id: noteId,
+                                                                bookId: id,
+                                                                paragraphHash: hash,
+                                                                content,
+                                                                height: 80,
+                                                                createdAt: Date.now(),
+                                                                updatedAt: Date.now(),
+                                                            });
+                                                            const newMap = new Map(noteMap);
+                                                            newMap.set(hash, { content, height: 80 });
+                                                            setNoteMap(newMap);
+                                                            setNotesVersion(prev => prev + 1);
+                                                        } else {
+                                                            await db.notes.delete(noteId);
+                                                            const newMap = new Map(noteMap);
+                                                            newMap.delete(hash);
+                                                            setNoteMap(newMap);
+                                                            setNotesVersion(prev => prev + 1);
+                                                        }
+                                                    } catch (e) {
+                                                        console.error('Failed to save note:', e);
+                                                    }
+                                                }
+                                            });
+                                        }
+                                    }
+                                }
+                            }
+                        } else if (activeParagraphHash) {
+                            // If we have an active paragraph, just update the tab-specific state
+                            if (tab === 'translation') {
+                                setActiveTranslationParagraphHash(activeParagraphHash);
+                            } else if (tab === 'chat') {
+                                setActiveChatParagraphHash(activeParagraphHash);
+                            } else if (tab === 'note') {
+                                const hash = activeParagraphHash;
+                                const note = noteMap.get(hash);
+                                const noteId = `${id}-${hash}`;
+                                if (note) {
+                                    setActiveNoteContent({
+                                        content: note.content,
+                                        paragraphHash: hash,
+                                        onUpdate: async (content: string) => {
+                                            try {
+                                                if (content.trim()) {
+                                                    await db.notes.put({
+                                                        id: noteId,
+                                                        bookId: id,
+                                                        paragraphHash: hash,
+                                                        content,
+                                                        height: note.height || 80,
+                                                        createdAt: note.height ? Date.now() : Date.now(),
+                                                        updatedAt: Date.now(),
+                                                    });
+                                                    const newMap = new Map(noteMap);
+                                                    newMap.set(hash, { ...note, content });
+                                                    setNoteMap(newMap);
+                                                    setNotesVersion(prev => prev + 1);
+                                                } else {
+                                                    await db.notes.delete(noteId);
+                                                    const newMap = new Map(noteMap);
+                                                    newMap.delete(hash);
+                                                    setNoteMap(newMap);
+                                                    setNotesVersion(prev => prev + 1);
+                                                }
+                                            } catch (e) {
+                                                console.error('Failed to save note:', e);
+                                            }
+                                        }
+                                    });
+                                } else {
+                                    setActiveNoteContent({
+                                        content: '',
+                                        paragraphHash: hash,
+                                        onUpdate: async (content: string) => {
+                                            try {
+                                                if (content.trim()) {
+                                                    await db.notes.put({
+                                                        id: noteId,
+                                                        bookId: id,
+                                                        paragraphHash: hash,
+                                                        content,
+                                                        height: 80,
+                                                        createdAt: Date.now(),
+                                                        updatedAt: Date.now(),
+                                                    });
+                                                    const newMap = new Map(noteMap);
+                                                    newMap.set(hash, { content, height: 80 });
+                                                    setNoteMap(newMap);
+                                                    setNotesVersion(prev => prev + 1);
+                                                } else {
+                                                    await db.notes.delete(noteId);
+                                                    const newMap = new Map(noteMap);
+                                                    newMap.delete(hash);
+                                                    setNoteMap(newMap);
+                                                    setNotesVersion(prev => prev + 1);
+                                                }
+                                            } catch (e) {
+                                                console.error('Failed to save note:', e);
+                                            }
+                                        }
+                                    });
+                                }
+                            }
+                        }
+                    }}
                     onClose={() => {
                         setBottomPanelOpen(false);
                         setActiveParagraphHash(null);
@@ -1195,10 +1375,35 @@ export default function ReaderPage({ params }: { params: Promise<{ id: string }>
                         const paragraphHash = activeTranslationParagraphHash;
                         const cachedTranslation = translationMap.get(paragraphHash);
                         const translation = cachedTranslation?.translatedText || null;
+                        const translationError = translationErrors.get(paragraphHash) || null;
                         
                         return (
                             <div className="h-full flex flex-col p-4">
-                                {translation ? (
+                                {translationError ? (
+                                    <div className="flex-1 flex items-center justify-center text-center p-4">
+                                        <div className="w-full">
+                                            <div className="p-4 bg-red-50 border border-red-200 rounded-lg text-red-600 text-sm">
+                                                {translationError}
+                                            </div>
+                                            <button
+                                                onClick={async () => {
+                                                    // Find the paragraph and trigger translation
+                                                    const paragraphElement = containerRef.current?.querySelector(`[data-paragraph-hash="${paragraphHash}"]`) as HTMLElement;
+                                                    if (paragraphElement) {
+                                                        // Trigger translation by simulating button click
+                                                        const translateButton = paragraphElement.querySelector('[data-translate-button]') as HTMLElement;
+                                                        if (translateButton) {
+                                                            translateButton.click();
+                                                        }
+                                                    }
+                                                }}
+                                                className="mt-4 w-full px-4 py-2 bg-rose-500 hover:bg-rose-600 text-white text-sm font-medium rounded-lg transition-colors"
+                                            >
+                                                Retry Translation
+                                            </button>
+                                        </div>
+                                    </div>
+                                ) : translation ? (
                                     <div 
                                         className="flex-1 overflow-y-auto p-4 rounded-lg"
                                         style={{
@@ -1218,7 +1423,22 @@ export default function ReaderPage({ params }: { params: Promise<{ id: string }>
                                     <div className="flex-1 flex items-center justify-center text-center text-sm" style={{ color: 'var(--zen-text-muted, #78716c)' }}>
                                         <div>
                                             <p className="mb-4">Translation not available yet</p>
-                                            <p className="text-xs opacity-75">Tap the translate button to generate translation</p>
+                                            <button
+                                                onClick={async () => {
+                                                    // Find the paragraph and trigger translation
+                                                    const paragraphElement = containerRef.current?.querySelector(`[data-paragraph-hash="${paragraphHash}"]`) as HTMLElement;
+                                                    if (paragraphElement) {
+                                                        // Trigger translation by simulating button click
+                                                        const translateButton = paragraphElement.querySelector('[data-translate-button]') as HTMLElement;
+                                                        if (translateButton) {
+                                                            translateButton.click();
+                                                        }
+                                                    }
+                                                }}
+                                                className="px-4 py-2 bg-rose-500 hover:bg-rose-600 text-white text-sm font-medium rounded-lg transition-colors"
+                                            >
+                                                Translate Now
+                                            </button>
                                         </div>
                                     </div>
                                 )}
