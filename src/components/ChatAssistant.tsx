@@ -27,7 +27,7 @@ interface ChatAssistantProps {
   isMobile?: boolean; // Whether to render for mobile (in bottom panel)
 }
 
-export default function ChatAssistant({
+function ChatAssistant({
   bookId,
   paragraphHash,
   paragraphText,
@@ -718,4 +718,17 @@ export default function ChatAssistant({
     </div>
   );
 }
+
+// Memoize with custom comparison to prevent unnecessary re-renders
+export default React.memo(ChatAssistant, (prevProps, nextProps) => {
+  // Only re-render if relevant props change
+  return (
+    prevProps.isOpen === nextProps.isOpen &&
+    prevProps.paragraphHash === nextProps.paragraphHash &&
+    prevProps.isMobile === nextProps.isMobile &&
+    prevProps.paragraphText === nextProps.paragraphText &&
+    prevProps.translation === nextProps.translation &&
+    prevProps.bookId === nextProps.bookId
+  );
+});
 

@@ -71,7 +71,7 @@ type PanelState = 'collapsed' | 'partial' | 'full';
  * Draggable bottom panel for mobile devices
  * States: collapsed (minimal), partial (33% viewport), full (100% with blur)
  */
-export default function MobileBottomPanel({
+function MobileBottomPanel({
   isOpen,
   activeTab,
   onTabChange,
@@ -203,21 +203,12 @@ export default function MobileBottomPanel({
       panelRef.current.style.height = `${newHeight}px`;
     }
     
-    // Store height for RAF update
+    // Store height for later sync (only update React state on drag end, not during drag)
     lastHeightRef.current = newHeight;
     
-    // Cancel previous RAF if exists
-    if (rafRef.current !== null) {
-      cancelAnimationFrame(rafRef.current);
-    }
-    
-    // Schedule React state update via RAF (throttled to 60fps)
-    rafRef.current = requestAnimationFrame(() => {
-      setCurrentHeight(lastHeightRef.current);
-      // Debounced state update for backdrop (not critical during drag)
-      updatePanelState(lastHeightRef.current);
-      rafRef.current = null;
-    });
+    // Only update panel state for backdrop visibility (debounced, doesn't cause re-render of content)
+    // Don't update currentHeight during drag to avoid React re-renders
+    updatePanelState(newHeight);
   }, [dragStartY, dragStartHeight, collapsedHeight, fullHeight, updatePanelState]);
 
   // Handle drag end
@@ -494,3 +485,17 @@ export default function MobileBottomPanel({
     </>
   );
 }
+
+// Memoize to prevent re-renders when parent re-renders (unless props actually change)
+export default React.memo(MobileBottomPanel, (prevProps, nextProps) => {
+  // Only re-render if relevant props change
+  return (
+    prevProps.isOpen === nextProps.isOpen &&
+    prevProps.activeTab === nextProps.activeTab &&
+    prevProps.children === nextProps.children &&
+    prevProps.noteContent === nextProps.noteContent &&
+    prevProps.chatContent === nextProps.chatContent &&
+    prevProps.onTabChange === nextProps.onTabChange &&
+    prevProps.onClose === nextProps.onClose
+  );
+});

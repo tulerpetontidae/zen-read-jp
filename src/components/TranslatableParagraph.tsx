@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useState, useRef, useEffect } from 'react';
+import React, { useState, useRef, useEffect, useCallback } from 'react';
 import { db } from '@/lib/db';
 import { translate, type TranslationEngine } from '@/lib/translation';
 import { checkGoogleTranslateAvailable } from '@/lib/browser';
@@ -9,17 +9,15 @@ import ChatAssistant from './ChatAssistant';
 import BookmarkSelector from './BookmarkSelector';
 import { useIsMobile } from '@/hooks/useIsMobile';
 import type { BottomPanelTab } from './MobileBottomPanel';
-
-// Simple hash function for paragraph text
-function hashText(text: string): string {
-    let hash = 0;
-    for (let i = 0; i < text.length; i++) {
-        const char = text.charCodeAt(i);
-        hash = ((hash << 5) - hash) + char;
-        hash = hash & hash;
-    }
-    return hash.toString(36);
-}
+import { 
+    useReaderDataStore,
+    useTranslation,
+    useNote,
+    useBookmark,
+    useHasChat,
+    useActiveParagraphHash,
+    useBookmarkGroups,
+} from '@/contexts/ReaderDataContext';
 
 interface TranslatableParagraphProps {
     children: React.ReactNode;
@@ -30,49 +28,29 @@ interface TranslatableParagraphProps {
     showAllComments?: boolean;
     showAllChats?: boolean;
     zenMode?: boolean;
-    // Pre-loaded data from lookup maps (Phase 1: Batch Database Queries)
-    cachedTranslation?: { translatedText: string; originalText: string } | null;
-    cachedNote?: { content: string; height?: number } | null;
-    cachedBookmark?: { colorGroupId: string } | null;
-    cachedHasChat?: boolean;
-    bookmarkGroupMap?: Map<string, { name: string; color: string }>;
-        // Callbacks for data updates (to update lookup maps in parent)
-        onTranslationUpdate?: (paragraphHash: string, translation: { translatedText: string; originalText: string } | null) => void;
-        onTranslationError?: (paragraphHash: string, error: string | null) => void; // New callback for errors
-    onNoteUpdate?: (paragraphHash: string, note: { content: string; height?: number } | null) => void;
-    onBookmarkUpdate?: (paragraphHash: string, bookmark: { colorGroupId: string } | null) => void;
-    onChatUpdate?: (threadId: string, hasChat: boolean) => void;
-    // Mobile-specific callbacks
-    onOpenBottomPanel?: (tab: BottomPanelTab, paragraphHash: string) => void;
-    // Active paragraph tracking
-    activeParagraphHash?: string | null;
-    onParagraphActivate?: (paragraphHash: string) => void;
 }
 
 const TranslatableParagraph = React.memo(function TranslatableParagraph({ 
     children, 
     bookId, 
     paragraphText,
-    paragraphHash, // Use pre-calculated hash from parent
+    paragraphHash,
     showAllTranslations = false,
     showAllComments = false,
     showAllChats = false,
     zenMode = false,
-    cachedTranslation = null,
-    cachedNote = null,
-    cachedBookmark = null,
-    cachedHasChat = false,
-    bookmarkGroupMap = new Map(),
-        onTranslationUpdate,
-        onTranslationError,
-        onNoteUpdate,
-        onBookmarkUpdate,
-        onChatUpdate,
-        onOpenBottomPanel,
-        activeParagraphHash = null,
-        onParagraphActivate,
 }: TranslatableParagraphProps) {
     const isMobile = useIsMobile();
+    
+    // Get data from context using selectors (only re-renders when THIS paragraph's data changes)
+    const dataStore = useReaderDataStore();
+    const cachedTranslation = useTranslation(paragraphHash);
+    const cachedNote = useNote(paragraphHash);
+    const cachedBookmark = useBookmark(paragraphHash);
+    const chatThreadId = `${bookId}|${paragraphHash}`;
+    const cachedHasChat = useHasChat(chatThreadId);
+    const activeParagraphHash = useActiveParagraphHash();
+    const bookmarkGroupMap = useBookmarkGroups();
     
     // Mobile: tap state (buttons appear on tap instead of hover)
     const [isTapped, setIsTapped] = useState(false);
@@ -115,7 +93,7 @@ const TranslatableParagraph = React.memo(function TranslatableParagraph({
     // Use pre-calculated paragraphHash from parent (no need to recalculate)
     const translationId = `${bookId}-${paragraphHash}`;
     const noteId = `${bookId}-${paragraphHash}`;
-    const threadId = `${bookId}|${paragraphHash}`;
+    const threadId = chatThreadId; // Use the one from context hooks
     const bookmarkId = `${bookId}-${paragraphHash}`;
 
     // Track if note is being edited to prevent overwrites
@@ -262,9 +240,7 @@ const TranslatableParagraph = React.memo(function TranslatableParagraph({
             }
             
             // Activate this paragraph
-            if (onParagraphActivate) {
-                onParagraphActivate(paragraphHash);
-            }
+            dataStore.setActiveParagraphHash(paragraphHash);
             
             // Toggle tap state
             setIsTapped(!isTapped);
@@ -339,14 +315,13 @@ const TranslatableParagraph = React.memo(function TranslatableParagraph({
         
         // Mobile: open translation in bottom panel, trigger translation if needed
         if (isMobile) {
-            if (onOpenBottomPanel) {
-                onOpenBottomPanel('translation', paragraphHash);
-            }
+            // Set active paragraph so bottom panel knows which paragraph is active
+            dataStore.setActiveParagraphHash(paragraphHash);
             // If translation doesn't exist, fetch it
             if (!translation) {
                 // Trigger translation (continue with normal flow)
             } else {
-                // Translation exists, just opened panel
+                // Translation exists, just opened panel - bottom panel will handle display
                 return;
             }
         } else {
@@ -427,14 +402,10 @@ const TranslatableParagraph = React.memo(function TranslatableParagraph({
                 createdAt: Date.now(),
             });
 
-            // Update parent's lookup map
-            if (onTranslationUpdate) {
-                onTranslationUpdate(paragraphHash, { translatedText, originalText: paragraphText });
-            }
+            // Update context store
+            dataStore.setTranslation(paragraphHash, { translatedText, originalText: paragraphText });
             // Clear any previous errors
-            if (onTranslationError) {
-                onTranslationError(paragraphHash, null);
-            }
+            dataStore.setTranslationError(paragraphHash, null);
 
             setTranslation(translatedText);
             // On mobile, translation is shown in bottom panel, not inline
@@ -445,14 +416,10 @@ const TranslatableParagraph = React.memo(function TranslatableParagraph({
             console.error('Translation error:', e);
             const errorMessage = e instanceof Error ? e.message : 'Translation failed';
             setError(errorMessage);
-            // Pass error to parent for mobile bottom panel display
-            if (onTranslationError) {
-                onTranslationError(paragraphHash, errorMessage);
-            }
-            // Clear translation from map
-            if (onTranslationUpdate) {
-                onTranslationUpdate(paragraphHash, null);
-            }
+            // Pass error to context for mobile bottom panel display
+            dataStore.setTranslationError(paragraphHash, errorMessage);
+            // Clear translation from store
+            dataStore.setTranslation(paragraphHash, null);
         } finally {
             setIsLoading(false);
         }
@@ -466,10 +433,8 @@ const TranslatableParagraph = React.memo(function TranslatableParagraph({
             console.error('Failed to clear translation cache:', e);
         }
 
-        // Update parent's lookup map
-        if (onTranslationUpdate) {
-            onTranslationUpdate(paragraphHash, null);
-        }
+        // Update context store
+        dataStore.setTranslation(paragraphHash, null);
 
         // Reset state
         setTranslation(null);
@@ -491,10 +456,9 @@ const TranslatableParagraph = React.memo(function TranslatableParagraph({
         }
         
         if (isMobile) {
-            // On mobile, open bottom panel with note tab
-            if (onOpenBottomPanel) {
-                onOpenBottomPanel('note', paragraphHash);
-            }
+            // On mobile, set active paragraph for bottom panel
+            dataStore.setActiveParagraphHash(paragraphHash);
+            // Bottom panel will handle display based on active paragraph
         } else {
             // Desktop: toggle note sidebar
             const wasOpen = isNoteOpen;
@@ -527,18 +491,14 @@ const TranslatableParagraph = React.memo(function TranslatableParagraph({
                     updatedAt: Date.now(),
                 });
                 
-                // Update parent's lookup map
-                if (onNoteUpdate) {
-                    onNoteUpdate(paragraphHash, { content: noteContent, height: noteHeight });
-                }
+                // Update context store
+                dataStore.setNote(paragraphHash, { content: noteContent, height: noteHeight });
             } else {
                 // Delete note if empty
                 await db.notes.delete(noteId);
                 
-                // Update parent's lookup map
-                if (onNoteUpdate) {
-                    onNoteUpdate(paragraphHash, null);
-                }
+                // Update context store
+                dataStore.setNote(paragraphHash, null);
             }
             // Track what we saved to prevent overwrites
             lastSavedNoteContentRef.current = noteContent;
@@ -585,9 +545,7 @@ const TranslatableParagraph = React.memo(function TranslatableParagraph({
         } else {
             setIsBookmarkSelectorOpen(true);
             // Activate this paragraph when opening bookmark selector
-            if (onParagraphActivate) {
-                onParagraphActivate(paragraphHash);
-            }
+            dataStore.setActiveParagraphHash(paragraphHash);
         }
         // Force hover state to show buttons
         if (!isMobile) {
@@ -613,10 +571,8 @@ const TranslatableParagraph = React.memo(function TranslatableParagraph({
                         updatedAt: Date.now(),
                     });
                     
-                    // Update parent's lookup map
-                    if (onBookmarkUpdate) {
-                        onBookmarkUpdate(paragraphHash, { colorGroupId });
-                    }
+                    // Update context store
+                    dataStore.setBookmark(paragraphHash, { colorGroupId });
                     
                     setBookmarkGroupColor(group.color);
                     setCurrentBookmarkGroupId(colorGroupId);
@@ -633,10 +589,8 @@ const TranslatableParagraph = React.memo(function TranslatableParagraph({
             try {
                 await db.bookmarks.delete(bookmarkId);
                 
-                // Update parent's lookup map
-                if (onBookmarkUpdate) {
-                    onBookmarkUpdate(paragraphHash, null);
-                }
+                // Update context store
+                dataStore.setBookmark(paragraphHash, null);
                 
                 setCurrentBookmarkGroupId(null);
                 setBookmarkGroupColor(null);
@@ -652,14 +606,13 @@ const TranslatableParagraph = React.memo(function TranslatableParagraph({
         e.stopPropagation();
         
         if (isMobile) {
-            // On mobile, open bottom panel with chat tab
-            if (onOpenBottomPanel) {
-                onOpenBottomPanel('chat', paragraphHash);
-            }
+            // On mobile, set active paragraph for bottom panel
+            dataStore.setActiveParagraphHash(paragraphHash);
             if (!hasChat) {
                 // Mark as having chat when opening for first time
                 setHasChat(true);
             }
+            // Note: Bottom panel will be handled by page component watching activeParagraphHash
         } else {
             // Desktop: toggle chat sidebar
             setIsChatOpen(!isChatOpen);
@@ -1150,17 +1103,13 @@ const TranslatableParagraph = React.memo(function TranslatableParagraph({
                     onChatDeleted={() => {
                         setHasChat(false);
                         setIsChatOpen(false);
-                        // Update parent's lookup map
-                        if (onChatUpdate) {
-                            onChatUpdate(threadId, false);
-                        }
+                        // Update context store
+                        dataStore.setChat(threadId, false);
                     }}
                     onChatCreated={() => {
                         setHasChat(true);
-                        // Update parent's lookup map
-                        if (onChatUpdate) {
-                            onChatUpdate(threadId, true);
-                        }
+                        // Update context store
+                        dataStore.setChat(threadId, true);
                     }}
                 />
             )}
@@ -1234,24 +1183,16 @@ const TranslatableParagraph = React.memo(function TranslatableParagraph({
         </div>
     );
 }, (prevProps, nextProps) => {
-    // Custom comparison: re-render if bookmarkGroupMap changes
-    // Check if bookmarkGroupMap reference changed (it will be a new Map instance when refreshed)
-    if (prevProps.bookmarkGroupMap !== nextProps.bookmarkGroupMap) {
-        return false; // Re-render
-    }
-    // For other props, use default shallow comparison
+    // Simple comparison - data comes from context, not props
+    // Only re-render if these stable props change
     return (
         prevProps.bookId === nextProps.bookId &&
-        prevProps.paragraphText === nextProps.paragraphText &&
         prevProps.paragraphHash === nextProps.paragraphHash &&
         prevProps.showAllTranslations === nextProps.showAllTranslations &&
         prevProps.showAllComments === nextProps.showAllComments &&
         prevProps.showAllChats === nextProps.showAllChats &&
         prevProps.zenMode === nextProps.zenMode &&
-        prevProps.cachedTranslation === nextProps.cachedTranslation &&
-        prevProps.cachedNote === nextProps.cachedNote &&
-        prevProps.cachedBookmark === nextProps.cachedBookmark &&
-        prevProps.cachedHasChat === nextProps.cachedHasChat
+        prevProps.children === nextProps.children
     );
 });
 

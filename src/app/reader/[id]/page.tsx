@@ -1,6 +1,7 @@
 'use client';
 
 import React, { useEffect, useRef, useState, use, useMemo, useCallback } from 'react';
+import { createPortal } from 'react-dom';
 import { db } from '@/lib/db';
 import ePub, { Book } from 'epubjs';
 import { FaChevronLeft } from 'react-icons/fa';
@@ -13,6 +14,7 @@ import SettingsModal, { FONT_OPTIONS, WIDTH_OPTIONS, FONT_SIZE_OPTIONS } from '@
 import MobileBottomPanel, { type BottomPanelTab } from '@/components/MobileBottomPanel';
 import ChatAssistant from '@/components/ChatAssistant';
 import { useIsMobile } from '@/hooks/useIsMobile';
+import { ReaderDataProvider, useReaderDataStore, useActiveParagraphHash as useContextActiveParagraph } from '@/contexts/ReaderDataContext';
 
 function debounce(func: Function, wait: number) {
     let timeout: NodeJS.Timeout;
@@ -59,7 +61,7 @@ function getTextContent(node: React.ReactNode): string {
 }
 
 // Note editor component for mobile bottom panel with local state management
-function NoteEditorMobile({ 
+const NoteEditorMobile = React.memo(function NoteEditorMobile({ 
     initialContent, 
     onUpdate 
 }: { 
@@ -155,11 +157,24 @@ function NoteEditorMobile({
             />
         </div>
     );
+});
+
+// Wrapper component that provides the context
+export default function ReaderPage({ params }: { params: Promise<{ id: string }> }) {
+    return (
+        <ReaderDataProvider>
+            <ReaderPageContent params={params} />
+        </ReaderDataProvider>
+    );
 }
 
-export default function ReaderPage({ params }: { params: Promise<{ id: string }> }) {
+// Actual reader content that uses the context
+function ReaderPageContent({ params }: { params: Promise<{ id: string }> }) {
     const { id } = use(params);
     const containerRef = useRef<HTMLDivElement>(null);
+    const paragraphTextMapRef = useRef<Map<string, string>>(new Map()); // Cache paragraph text by hash
+    const scrollRafRef = useRef<number | null>(null);
+    const lastProgressRef = useRef<number>(0);
     const [progress, setProgress] = useState(0);
     const [isLoading, setIsLoading] = useState(true);
     const [sections, setSections] = useState<Array<{ id: string, html: string }>>([]);
@@ -182,10 +197,9 @@ export default function ReaderPage({ params }: { params: Promise<{ id: string }>
     const isMobile = useIsMobile();
     const [bottomPanelOpen, setBottomPanelOpen] = useState(false);
     const [bottomPanelTab, setBottomPanelTab] = useState<BottomPanelTab>('translation');
-    const [activeParagraphHash, setActiveParagraphHash] = useState<string | null>(null);
-    const [activeNoteContent, setActiveNoteContent] = useState<{ content: string; paragraphHash: string; onUpdate: (content: string) => void } | null>(null);
-    const [activeChatParagraphHash, setActiveChatParagraphHash] = useState<string | null>(null);
-    const [activeTranslationParagraphHash, setActiveTranslationParagraphHash] = useState<string | null>(null);
+    
+    // Use context for active paragraph (set by TranslatableParagraph)
+    const activeParagraphHash = useContextActiveParagraph();
     
     // Batch-loaded data lookup maps (Phase 1: Batch Database Queries)
     const [translationMap, setTranslationMap] = useState<Map<string, { translatedText: string; originalText: string; error?: string }>>(new Map());
@@ -194,6 +208,26 @@ export default function ReaderPage({ params }: { params: Promise<{ id: string }>
     const [bookmarkMap, setBookmarkMap] = useState<Map<string, { colorGroupId: string }>>(new Map());
     const [chatMap, setChatMap] = useState<Map<string, boolean>>(new Map()); // Maps threadId to hasChat boolean
     const [bookmarkGroupMap, setBookmarkGroupMap] = useState<Map<string, { name: string; color: string }>>(new Map());
+    
+    // Refs to access latest map values without causing re-renders
+    const translationMapRef = useRef(translationMap);
+    const translationErrorsRef = useRef(translationErrors);
+    const noteMapRef = useRef(noteMap);
+    const chatMapRef = useRef(chatMap);
+    
+    // Keep refs in sync with state
+    useEffect(() => {
+        translationMapRef.current = translationMap;
+    }, [translationMap]);
+    useEffect(() => {
+        translationErrorsRef.current = translationErrors;
+    }, [translationErrors]);
+    useEffect(() => {
+        noteMapRef.current = noteMap;
+    }, [noteMap]);
+    useEffect(() => {
+        chatMapRef.current = chatMap;
+    }, [chatMap]);
 
     // Load reader settings
     const loadReaderSettings = useCallback(async () => {
@@ -228,6 +262,9 @@ export default function ReaderPage({ params }: { params: Promise<{ id: string }>
             console.error('Failed to refresh bookmark groups:', e);
         }
     }, []);
+
+    // Get the data store from context
+    const dataStore = useReaderDataStore();
 
     // Phase 1: Batch load all book-related data once on mount
     useEffect(() => {
@@ -271,6 +308,16 @@ export default function ReaderPage({ params }: { params: Promise<{ id: string }>
                     bgMap.set(g.id, { name: g.name, color: g.color });
                 });
 
+                // Initialize context store with all data
+                dataStore.initializeData({
+                    translations: tMap,
+                    notes: nMap,
+                    bookmarks: bMap,
+                    chats: cMap,
+                    bookmarkGroups: bgMap,
+                });
+
+                // Also update local state for bottom panel content (temporary)
                 setTranslationMap(tMap);
                 setNoteMap(nMap);
                 setBookmarkMap(bMap);
@@ -282,7 +329,7 @@ export default function ReaderPage({ params }: { params: Promise<{ id: string }>
         };
 
         batchLoadData();
-    }, [id]);
+    }, [id, dataStore]);
 
     // Refresh bookmark groups when settings modal closes (in case groups were updated)
     useEffect(() => {
@@ -299,6 +346,55 @@ export default function ReaderPage({ params }: { params: Promise<{ id: string }>
         }, 2000);
         return () => clearInterval(interval);
     }, [refreshBookmarkGroupMap]);
+
+    // Note update callback factory - needed for memoizing activeNoteContent
+    const createNoteUpdateCallbackImmediate = useCallback((paragraphHash: string) => {
+        return async (content: string) => {
+            const noteId = `${id}-${paragraphHash}`;
+            const currentNote = noteMapRef.current.get(paragraphHash);
+            try {
+                if (content.trim()) {
+                    await db.notes.put({
+                        id: noteId,
+                        bookId: id,
+                        paragraphHash,
+                        content,
+                        height: currentNote?.height || 80,
+                        createdAt: Date.now(),
+                        updatedAt: Date.now(),
+                    });
+                    const newMap = new Map(noteMapRef.current);
+                    newMap.set(paragraphHash, { content, height: currentNote?.height || 80 });
+                    setNoteMap(newMap);
+                    // Also update context store
+                    dataStore.setNote(paragraphHash, { content, height: currentNote?.height || 80 });
+                } else {
+                    await db.notes.delete(noteId);
+                    const newMap = new Map(noteMapRef.current);
+                    newMap.delete(paragraphHash);
+                    setNoteMap(newMap);
+                    dataStore.setNote(paragraphHash, null);
+                }
+            } catch (e) {
+                console.error('Failed to save note:', e);
+            }
+        };
+    }, [id, dataStore]);
+    
+    // Derived state for bottom panel content
+    const activeNoteContent = useMemo(() => {
+        if (!activeParagraphHash) return null;
+        const note = noteMap.get(activeParagraphHash);
+        return {
+            content: note?.content || '',
+            paragraphHash: activeParagraphHash,
+            onUpdate: createNoteUpdateCallbackImmediate(activeParagraphHash),
+        };
+    }, [activeParagraphHash, noteMap, createNoteUpdateCallbackImmediate]);
+    
+    // Use active paragraph hash for chat and translation
+    const activeChatParagraphHash = activeParagraphHash;
+    const activeTranslationParagraphHash = activeParagraphHash;
 
     // Get current font family, max width, and font size from settings
     const currentFont = FONT_OPTIONS.find(f => f.value === readerFont) || FONT_OPTIONS[0];
@@ -347,6 +443,7 @@ export default function ReaderPage({ params }: { params: Promise<{ id: string }>
     };
 
     // Parser options to wrap paragraphs with TranslatableParagraph
+    // CRITICAL: Dependencies are minimal - NO data maps! TranslatableParagraph uses context for data
     const parserOptions: HTMLReactParserOptions = useMemo(() => ({
         replace: (domNode) => {
             if (domNode instanceof Element) {
@@ -368,15 +465,11 @@ export default function ReaderPage({ params }: { params: Promise<{ id: string }>
                     // Only wrap if there's actual text content (not just images)
                     if (textContent.trim().length > 0) {
                         const paragraphHash = hashText(textContent);
-                        const translationId = `${id}-${paragraphHash}`;
-                        const threadId = `${id}|${paragraphHash}`;
                         
-                        // Get cached data from lookup maps
-                        const cachedTranslation = translationMap.get(paragraphHash);
-                        const cachedNote = noteMap.get(paragraphHash);
-                        const cachedBookmark = bookmarkMap.get(paragraphHash);
-                        const hasChat = chatMap.has(threadId);
+                        // Cache paragraph text for quick lookup (avoid DOM queries)
+                        paragraphTextMapRef.current.set(paragraphHash, textContent);
                         
+                        // TranslatableParagraph will get data from context, not props!
                         return (
                             <TranslatableParagraph 
                                 bookId={id} 
@@ -386,161 +479,6 @@ export default function ReaderPage({ params }: { params: Promise<{ id: string }>
                                 showAllComments={showAllComments}
                                 showAllChats={showAllChats}
                                 zenMode={zenMode}
-                                // Pre-loaded data from lookup maps
-                                cachedTranslation={cachedTranslation}
-                                cachedNote={cachedNote}
-                                cachedBookmark={cachedBookmark}
-                                cachedHasChat={hasChat}
-                                bookmarkGroupMap={bookmarkGroupMap}
-                                // Callbacks for data updates
-                                onTranslationUpdate={(hash, translation) => {
-                                    // Update map when translation is added/updated
-                                    const newMap = new Map(translationMap);
-                                    if (translation) {
-                                        newMap.set(hash, translation);
-                                    } else {
-                                        newMap.delete(hash);
-                                    }
-                                    setTranslationMap(newMap);
-                                }}
-                                onTranslationError={(hash, error) => {
-                                    // Update error map
-                                    const newErrorMap = new Map(translationErrors);
-                                    if (error) {
-                                        newErrorMap.set(hash, error);
-                                    } else {
-                                        newErrorMap.delete(hash);
-                                    }
-                                    setTranslationErrors(newErrorMap);
-                                }}
-                                onNoteUpdate={(hash, note) => {
-                                    // Update map when note is added/updated/deleted
-                                    const newMap = new Map(noteMap);
-                                    if (note) {
-                                        newMap.set(hash, note);
-                                    } else {
-                                        newMap.delete(hash);
-                                    }
-                                    setNoteMap(newMap);
-                                    setNotesVersion(prev => prev + 1);
-                                }}
-                                onBookmarkUpdate={(hash, bookmark) => {
-                                    // Update map when bookmark is added/updated/deleted
-                                    const newMap = new Map(bookmarkMap);
-                                    if (bookmark) {
-                                        newMap.set(hash, bookmark);
-                                    } else {
-                                        newMap.delete(hash);
-                                    }
-                                    setBookmarkMap(newMap);
-                                    setBookmarksVersion(prev => prev + 1);
-                                }}
-                                onChatUpdate={(threadId, hasChat) => {
-                                    // Update map when chat is added/deleted
-                                    const newMap = new Map(chatMap);
-                                    if (hasChat) {
-                                        newMap.set(threadId, true);
-                                    } else {
-                                        newMap.delete(threadId);
-                                    }
-                                    setChatMap(newMap);
-                                }}
-                                activeParagraphHash={activeParagraphHash}
-                                onParagraphActivate={(hash) => {
-                                    setActiveParagraphHash(hash);
-                                }}
-                                onOpenBottomPanel={(tab, hash) => {
-                                    setBottomPanelTab(tab);
-                                    setActiveParagraphHash(hash);
-                                    setBottomPanelOpen(true);
-                                    
-                                    if (tab === 'translation') {
-                                        setActiveTranslationParagraphHash(hash);
-                                        // If translation doesn't exist, trigger it
-                                        const cachedTranslation = translationMap.get(hash);
-                                        if (!cachedTranslation) {
-                                            // Translation will be triggered when user opens the tab
-                                        }
-                                    } else if (tab === 'chat') {
-                                        setActiveChatParagraphHash(hash);
-                                    } else if (tab === 'note') {
-                                        const note = noteMap.get(hash);
-                                        const noteId = `${id}-${hash}`;
-                                        if (note) {
-                                            setActiveNoteContent({
-                                                content: note.content,
-                                                paragraphHash: hash,
-                                                onUpdate: async (content: string) => {
-                                                    try {
-                                                        if (content.trim()) {
-                                                            await db.notes.put({
-                                                                id: noteId,
-                                                                bookId: id,
-                                                                paragraphHash: hash,
-                                                                content,
-                                                                height: note.height || 80,
-                                                                createdAt: note.height ? Date.now() : Date.now(),
-                                                                updatedAt: Date.now(),
-                                                            });
-                                                            // Update note content
-                                                            const newMap = new Map(noteMap);
-                                                            newMap.set(hash, { ...note, content });
-                                                            setNoteMap(newMap);
-                                                            setNotesVersion(prev => prev + 1);
-                                                        } else {
-                                                            await db.notes.delete(noteId);
-                                                            // Update note content
-                                                            const newMap = new Map(noteMap);
-                                                            newMap.delete(hash);
-                                                            setNoteMap(newMap);
-                                                            setNotesVersion(prev => prev + 1);
-                                                        }
-                                                        // Don't update activeNoteContent here - let NoteEditor handle its own state
-                                                        // This prevents overwriting local state while user is typing
-                                                    } catch (e) {
-                                                        console.error('Failed to save note:', e);
-                                                    }
-                                                }
-                                            });
-                                        } else {
-                                            setActiveNoteContent({
-                                                content: '',
-                                                paragraphHash: hash,
-                                                onUpdate: async (content: string) => {
-                                                    try {
-                                                        if (content.trim()) {
-                                                            await db.notes.put({
-                                                                id: noteId,
-                                                                bookId: id,
-                                                                paragraphHash: hash,
-                                                                content,
-                                                                height: 80,
-                                                                createdAt: Date.now(),
-                                                                updatedAt: Date.now(),
-                                                            });
-                                                            // Update note content
-                                                            const newMap = new Map(noteMap);
-                                                            newMap.set(hash, { content, height: 80 });
-                                                            setNoteMap(newMap);
-                                                            setNotesVersion(prev => prev + 1);
-                                                        } else {
-                                                            await db.notes.delete(noteId);
-                                                            // Update note content
-                                                            const newMap = new Map(noteMap);
-                                                            newMap.delete(hash);
-                                                            setNoteMap(newMap);
-                                                            setNotesVersion(prev => prev + 1);
-                                                        }
-                                                        // Don't update activeNoteContent here - let NoteEditor handle its own state
-                                                        // This prevents overwriting local state while user is typing
-                                                    } catch (e) {
-                                                        console.error('Failed to save note:', e);
-                                                    }
-                                                }
-                                            });
-                                        }
-                                    }
-                                }}
                             >
                                 {getParagraphWrapper(domNode, children)}
                             </TranslatableParagraph>
@@ -550,7 +488,17 @@ export default function ReaderPage({ params }: { params: Promise<{ id: string }>
             }
             return undefined;
             }
-        }), [id, showAllTranslations, showAllComments, showAllChats, zenMode, bookmarksVersion, translationMap, noteMap, bookmarkMap, chatMap, bookmarkGroupMap]);
+        }), [id, showAllTranslations, showAllComments, showAllChats, zenMode]);
+    // Dependencies: ONLY stable values that rarely change. NO maps, NO callbacks!
+
+    // CRITICAL: Memoize parsed sections to prevent re-parsing on every render
+    // This is the most expensive operation - parsing HTML for all sections
+    const parsedSections = useMemo(() => {
+        return sections.map((section) => ({
+            id: section.id,
+            content: parse(section.html, parserOptions),
+        }));
+    }, [sections, parserOptions]);
 
     useEffect(() => {
         let bookInstance: Book | null = null;
@@ -835,8 +783,23 @@ export default function ReaderPage({ params }: { params: Promise<{ id: string }>
                 const container = containerRef.current;
                 const pct = (container.scrollTop / (container.scrollHeight - container.clientHeight)) * 100;
                 const roundedPct = Math.round(Math.min(100, Math.max(0, pct)));
-                setProgress(roundedPct);
-                debouncedSave(roundedPct);
+                
+                // Only update if progress actually changed (avoid unnecessary re-renders)
+                if (roundedPct !== lastProgressRef.current) {
+                    lastProgressRef.current = roundedPct;
+                    
+                    // Cancel previous RAF
+                    if (scrollRafRef.current !== null) {
+                        cancelAnimationFrame(scrollRafRef.current);
+                    }
+                    
+                    // Throttle progress updates via RAF to prevent lag
+                    scrollRafRef.current = requestAnimationFrame(() => {
+                        setProgress(roundedPct);
+                        debouncedSave(roundedPct);
+                        scrollRafRef.current = null;
+                    });
+                }
 
                 // Show indicators on scroll if toggle is ON
                 if (showBookmarkIndicators) {
@@ -853,13 +816,16 @@ export default function ReaderPage({ params }: { params: Promise<{ id: string }>
 
         const container = containerRef.current;
         if (container) {
-            container.addEventListener('scroll', handleScroll);
+            container.addEventListener('scroll', handleScroll, { passive: true });
             return () => {
                 container.removeEventListener('scroll', handleScroll);
                 if (hideTimeout) clearTimeout(hideTimeout);
+                if (scrollRafRef.current !== null) {
+                    cancelAnimationFrame(scrollRafRef.current);
+                }
             };
         }
-    }, [id, showBookmarkIndicators]); // Removed sections to keep dependency array stable
+    }, [showBookmarkIndicators]);
     
     // Track bookmark positions for scrollbar indicators (static, relative to document)
     useEffect(() => {
@@ -918,6 +884,196 @@ export default function ReaderPage({ params }: { params: Promise<{ id: string }>
         
         return () => clearTimeout(timeout);
     }, [sections, id, bookmarksVersion]);
+
+    // Extract active paragraph data (only recalculates when active paragraph changes)
+    const activeTranslation = useMemo(() => {
+        if (!activeTranslationParagraphHash) return null;
+        return translationMap.get(activeTranslationParagraphHash) || null;
+    }, [activeTranslationParagraphHash, translationMap]);
+    
+    const activeTranslationError = useMemo(() => {
+        if (!activeTranslationParagraphHash) return null;
+        return translationErrors.get(activeTranslationParagraphHash) || null;
+    }, [activeTranslationParagraphHash, translationErrors]);
+    
+    const activeNote = useMemo(() => {
+        if (!activeParagraphHash) return null;
+        return noteMap.get(activeParagraphHash) || null;
+    }, [activeParagraphHash, noteMap]);
+    
+    const activeChatThreadId = useMemo(() => {
+        if (!activeChatParagraphHash) return null;
+        return `${id}|${activeChatParagraphHash}`;
+    }, [activeChatParagraphHash, id]);
+
+    // Create stable note update callback factory using refs (must be before handleTabChange)
+    const createNoteUpdateCallback = useCallback((paragraphHash: string) => {
+        return async (content: string) => {
+            const noteId = `${id}-${paragraphHash}`;
+            const currentNote = noteMapRef.current.get(paragraphHash);
+            try {
+                if (content.trim()) {
+                    await db.notes.put({
+                        id: noteId,
+                        bookId: id,
+                        paragraphHash,
+                        content,
+                        height: currentNote?.height || 80,
+                        createdAt: currentNote?.height ? Date.now() : Date.now(),
+                        updatedAt: Date.now(),
+                    });
+                    const newMap = new Map(noteMapRef.current);
+                    newMap.set(paragraphHash, { content, height: currentNote?.height || 80 });
+                    setNoteMap(newMap);
+                    setNotesVersion(prev => prev + 1);
+                } else {
+                    await db.notes.delete(noteId);
+                    const newMap = new Map(noteMapRef.current);
+                    newMap.delete(paragraphHash);
+                    setNoteMap(newMap);
+                    setNotesVersion(prev => prev + 1);
+                }
+            } catch (e) {
+                console.error('Failed to save note:', e);
+            }
+        };
+    }, [id]);
+
+    // Open bottom panel when active paragraph changes
+    useEffect(() => {
+        if (activeParagraphHash && isMobile) {
+            setBottomPanelOpen(true);
+        }
+    }, [activeParagraphHash, isMobile]);
+
+    // Stable callbacks for bottom panel to prevent re-renders
+    const handleBottomPanelClose = useCallback(() => {
+        setBottomPanelOpen(false);
+        // Clear active paragraph in context
+        dataStore.setActiveParagraphHash(null);
+    }, [dataStore]);
+
+    // Tab change handler
+    const handleTabChange = useCallback((tab: BottomPanelTab) => {
+        setBottomPanelTab(tab);
+    }, []);
+
+    // Memoize bottom panel content to prevent unnecessary re-renders
+    // IMPORTANT: Don't depend on bottomPanelTab to avoid recalculating on every tab switch
+    const translationContent = useMemo(() => {
+        if (!activeTranslationParagraphHash) return null;
+        
+        const paragraphHash = activeTranslationParagraphHash;
+        const cachedTranslation = translationMap.get(paragraphHash);
+        const translation = cachedTranslation?.translatedText || null;
+        const translationError = translationErrors.get(paragraphHash) || null;
+        
+        return (
+            <div className="h-full flex flex-col p-4">
+                {translationError ? (
+                    <div className="flex-1 flex items-center justify-center text-center p-4">
+                        <div className="w-full">
+                            <div className="p-4 bg-red-50 border border-red-200 rounded-lg text-red-600 text-sm">
+                                {translationError}
+                            </div>
+                            <button
+                                onClick={async () => {
+                                    // Find the paragraph and trigger translation
+                                    const paragraphElement = containerRef.current?.querySelector(`[data-paragraph-hash="${paragraphHash}"]`) as HTMLElement;
+                                    if (paragraphElement) {
+                                        // Trigger translation by simulating button click
+                                        const translateButton = paragraphElement.querySelector('[data-translate-button]') as HTMLElement;
+                                        if (translateButton) {
+                                            translateButton.click();
+                                        }
+                                    }
+                                }}
+                                className="mt-4 w-full px-4 py-2 bg-rose-500 hover:bg-rose-600 text-white text-sm font-medium rounded-lg transition-colors"
+                            >
+                                Retry Translation
+                            </button>
+                        </div>
+                    </div>
+                ) : translation ? (
+                    <div 
+                        className="flex-1 overflow-y-auto p-4 rounded-lg"
+                        style={{
+                            backgroundColor: 'var(--zen-translation-bg, rgba(255, 241, 242, 0.5))',
+                            borderWidth: '1px',
+                            borderStyle: 'solid',
+                            borderColor: 'var(--zen-translation-border, #fecdd3)',
+                            color: 'var(--zen-translation-text, #57534e)',
+                            fontFamily: 'system-ui, sans-serif',
+                            fontSize: '14px',
+                            lineHeight: '1.6',
+                        }}
+                    >
+                        {translation}
+                    </div>
+                ) : (
+                    <div className="flex-1 flex items-center justify-center text-center text-sm" style={{ color: 'var(--zen-text-muted, #78716c)' }}>
+                        <div>
+                            <p className="mb-4">Translation not available yet</p>
+                            <button
+                                onClick={async () => {
+                                    // Find the paragraph and trigger translation
+                                    const paragraphElement = containerRef.current?.querySelector(`[data-paragraph-hash="${paragraphHash}"]`) as HTMLElement;
+                                    if (paragraphElement) {
+                                        // Trigger translation by simulating button click
+                                        const translateButton = paragraphElement.querySelector('[data-translate-button]') as HTMLElement;
+                                        if (translateButton) {
+                                            translateButton.click();
+                                        }
+                                    }
+                                }}
+                                className="px-4 py-2 bg-rose-500 hover:bg-rose-600 text-white text-sm font-medium rounded-lg transition-colors"
+                            >
+                                Translate Now
+                            </button>
+                        </div>
+                    </div>
+                )}
+            </div>
+        );
+    }, [activeTranslationParagraphHash, activeTranslation?.translatedText, activeTranslationError]);
+
+    // Chat content - computed independently of active tab
+    const chatContent = useMemo(() => {
+        if (!activeChatParagraphHash) return null;
+        
+        const paragraphHash = activeChatParagraphHash;
+        const threadId = activeChatThreadId || `${id}|${paragraphHash}`;
+        // Use cached paragraph text instead of DOM query
+        const paragraphText = paragraphTextMapRef.current.get(paragraphHash) || '';
+        // Use ref to get translation without including entire map in dependencies
+        const paragraphTranslation = translationMapRef.current.get(paragraphHash);
+        const translation = paragraphTranslation?.translatedText || null;
+        
+        return (
+            <ChatAssistant
+                bookId={id}
+                paragraphHash={paragraphHash}
+                paragraphText={paragraphText}
+                translation={translation}
+                isOpen={true}
+                onClose={() => {
+                    setBottomPanelOpen(false);
+                }}
+                showAllChats={false}
+                isMobile={true}
+                onChatDeleted={() => {
+                    const newMap = new Map(chatMapRef.current);
+                    newMap.delete(threadId);
+                    setChatMap(newMap);
+                }}
+                onChatCreated={() => {
+                    const newMap = new Map(chatMapRef.current);
+                    newMap.set(threadId, true);
+                    setChatMap(newMap);
+                }}
+            />
+        );
+    }, [activeChatParagraphHash, id, activeChatThreadId]);
 
     return (
         <div className="fixed inset-0 flex flex-col overflow-hidden" style={{ backgroundColor: 'var(--zen-reader-bg, #FDFBF7)' }}>
@@ -1112,8 +1268,8 @@ export default function ReaderPage({ params }: { params: Promise<{ id: string }>
                         boxSizing: 'border-box',
                     }}
                 >
-                    {sections.map((section) => (
-                        <div
+                    {parsedSections.map((section) => (
+                        <div 
                             key={section.id}
                             className="epub-section"
                             style={{
@@ -1130,7 +1286,7 @@ export default function ReaderPage({ params }: { params: Promise<{ id: string }>
                                 boxSizing: 'border-box',
                             }}
                         >
-                            {parse(section.html, parserOptions)}
+                            {section.content}
                         </div>
                     ))}
                 </div>
@@ -1193,302 +1349,27 @@ export default function ReaderPage({ params }: { params: Promise<{ id: string }>
                 }
             `}</style>
 
-            {/* Mobile Bottom Panel */}
-            {isMobile && !zenMode && (
-                <MobileBottomPanel
-                    isOpen={bottomPanelOpen}
-                    activeTab={bottomPanelTab}
-                    onTabChange={(tab) => {
-                        setBottomPanelTab(tab);
-                        // When switching tabs, ensure we have an active paragraph
-                        // If no active paragraph, use the first one with content or create new
-                        if (!activeParagraphHash && containerRef.current) {
-                            // Find the first paragraph element
-                            const firstParagraph = containerRef.current.querySelector('[data-paragraph-hash]') as HTMLElement;
-                            if (firstParagraph) {
-                                const hash = firstParagraph.getAttribute('data-paragraph-hash');
-                                if (hash) {
-                                    setActiveParagraphHash(hash);
-                                    // Set the appropriate active content based on tab
-                                    if (tab === 'translation') {
-                                        setActiveTranslationParagraphHash(hash);
-                                    } else if (tab === 'chat') {
-                                        setActiveChatParagraphHash(hash);
-                                    } else if (tab === 'note') {
-                                        const note = noteMap.get(hash);
-                                        const noteId = `${id}-${hash}`;
-                                        if (note) {
-                                            setActiveNoteContent({
-                                                content: note.content,
-                                                paragraphHash: hash,
-                                                onUpdate: async (content: string) => {
-                                                    try {
-                                                        if (content.trim()) {
-                                                            await db.notes.put({
-                                                                id: noteId,
-                                                                bookId: id,
-                                                                paragraphHash: hash,
-                                                                content,
-                                                                height: note.height || 80,
-                                                                createdAt: note.height ? Date.now() : Date.now(),
-                                                                updatedAt: Date.now(),
-                                                            });
-                                                            const newMap = new Map(noteMap);
-                                                            newMap.set(hash, { ...note, content });
-                                                            setNoteMap(newMap);
-                                                            setNotesVersion(prev => prev + 1);
-                                                        } else {
-                                                            await db.notes.delete(noteId);
-                                                            const newMap = new Map(noteMap);
-                                                            newMap.delete(hash);
-                                                            setNoteMap(newMap);
-                                                            setNotesVersion(prev => prev + 1);
-                                                        }
-                                                    } catch (e) {
-                                                        console.error('Failed to save note:', e);
-                                                    }
-                                                }
-                                            });
-                                        } else {
-                                            setActiveNoteContent({
-                                                content: '',
-                                                paragraphHash: hash,
-                                                onUpdate: async (content: string) => {
-                                                    try {
-                                                        if (content.trim()) {
-                                                            await db.notes.put({
-                                                                id: noteId,
-                                                                bookId: id,
-                                                                paragraphHash: hash,
-                                                                content,
-                                                                height: 80,
-                                                                createdAt: Date.now(),
-                                                                updatedAt: Date.now(),
-                                                            });
-                                                            const newMap = new Map(noteMap);
-                                                            newMap.set(hash, { content, height: 80 });
-                                                            setNoteMap(newMap);
-                                                            setNotesVersion(prev => prev + 1);
-                                                        } else {
-                                                            await db.notes.delete(noteId);
-                                                            const newMap = new Map(noteMap);
-                                                            newMap.delete(hash);
-                                                            setNoteMap(newMap);
-                                                            setNotesVersion(prev => prev + 1);
-                                                        }
-                                                    } catch (e) {
-                                                        console.error('Failed to save note:', e);
-                                                    }
-                                                }
-                                            });
-                                        }
-                                    }
-                                }
-                            }
-                        } else if (activeParagraphHash) {
-                            // If we have an active paragraph, just update the tab-specific state
-                            if (tab === 'translation') {
-                                setActiveTranslationParagraphHash(activeParagraphHash);
-                            } else if (tab === 'chat') {
-                                setActiveChatParagraphHash(activeParagraphHash);
-                            } else if (tab === 'note') {
-                                const hash = activeParagraphHash;
-                                const note = noteMap.get(hash);
-                                const noteId = `${id}-${hash}`;
-                                if (note) {
-                                    setActiveNoteContent({
-                                        content: note.content,
-                                        paragraphHash: hash,
-                                        onUpdate: async (content: string) => {
-                                            try {
-                                                if (content.trim()) {
-                                                    await db.notes.put({
-                                                        id: noteId,
-                                                        bookId: id,
-                                                        paragraphHash: hash,
-                                                        content,
-                                                        height: note.height || 80,
-                                                        createdAt: note.height ? Date.now() : Date.now(),
-                                                        updatedAt: Date.now(),
-                                                    });
-                                                    const newMap = new Map(noteMap);
-                                                    newMap.set(hash, { ...note, content });
-                                                    setNoteMap(newMap);
-                                                    setNotesVersion(prev => prev + 1);
-                                                } else {
-                                                    await db.notes.delete(noteId);
-                                                    const newMap = new Map(noteMap);
-                                                    newMap.delete(hash);
-                                                    setNoteMap(newMap);
-                                                    setNotesVersion(prev => prev + 1);
-                                                }
-                                            } catch (e) {
-                                                console.error('Failed to save note:', e);
-                                            }
-                                        }
-                                    });
-                                } else {
-                                    setActiveNoteContent({
-                                        content: '',
-                                        paragraphHash: hash,
-                                        onUpdate: async (content: string) => {
-                                            try {
-                                                if (content.trim()) {
-                                                    await db.notes.put({
-                                                        id: noteId,
-                                                        bookId: id,
-                                                        paragraphHash: hash,
-                                                        content,
-                                                        height: 80,
-                                                        createdAt: Date.now(),
-                                                        updatedAt: Date.now(),
-                                                    });
-                                                    const newMap = new Map(noteMap);
-                                                    newMap.set(hash, { content, height: 80 });
-                                                    setNoteMap(newMap);
-                                                    setNotesVersion(prev => prev + 1);
-                                                } else {
-                                                    await db.notes.delete(noteId);
-                                                    const newMap = new Map(noteMap);
-                                                    newMap.delete(hash);
-                                                    setNoteMap(newMap);
-                                                    setNotesVersion(prev => prev + 1);
-                                                }
-                                            } catch (e) {
-                                                console.error('Failed to save note:', e);
-                                            }
-                                        }
-                                    });
-                                }
-                            }
-                        }
-                    }}
-                    onClose={() => {
-                        setBottomPanelOpen(false);
-                        setActiveParagraphHash(null);
-                        setActiveNoteContent(null);
-                        setActiveChatParagraphHash(null);
-                        setActiveTranslationParagraphHash(null);
-                    }}
-                >
-                    {bottomPanelTab === 'translation' && activeTranslationParagraphHash && (() => {
-                        const paragraphHash = activeTranslationParagraphHash;
-                        const cachedTranslation = translationMap.get(paragraphHash);
-                        const translation = cachedTranslation?.translatedText || null;
-                        const translationError = translationErrors.get(paragraphHash) || null;
-                        
-                        return (
-                            <div className="h-full flex flex-col p-4">
-                                {translationError ? (
-                                    <div className="flex-1 flex items-center justify-center text-center p-4">
-                                        <div className="w-full">
-                                            <div className="p-4 bg-red-50 border border-red-200 rounded-lg text-red-600 text-sm">
-                                                {translationError}
-                                            </div>
-                                            <button
-                                                onClick={async () => {
-                                                    // Find the paragraph and trigger translation
-                                                    const paragraphElement = containerRef.current?.querySelector(`[data-paragraph-hash="${paragraphHash}"]`) as HTMLElement;
-                                                    if (paragraphElement) {
-                                                        // Trigger translation by simulating button click
-                                                        const translateButton = paragraphElement.querySelector('[data-translate-button]') as HTMLElement;
-                                                        if (translateButton) {
-                                                            translateButton.click();
-                                                        }
-                                                    }
-                                                }}
-                                                className="mt-4 w-full px-4 py-2 bg-rose-500 hover:bg-rose-600 text-white text-sm font-medium rounded-lg transition-colors"
-                                            >
-                                                Retry Translation
-                                            </button>
-                                        </div>
-                                    </div>
-                                ) : translation ? (
-                                    <div 
-                                        className="flex-1 overflow-y-auto p-4 rounded-lg"
-                                        style={{
-                                            backgroundColor: 'var(--zen-translation-bg, rgba(255, 241, 242, 0.5))',
-                                            borderWidth: '1px',
-                                            borderStyle: 'solid',
-                                            borderColor: 'var(--zen-translation-border, #fecdd3)',
-                                            color: 'var(--zen-translation-text, #57534e)',
-                                            fontFamily: 'system-ui, sans-serif',
-                                            fontSize: '14px',
-                                            lineHeight: '1.6',
-                                        }}
-                                    >
-                                        {translation}
-                                    </div>
-                                ) : (
-                                    <div className="flex-1 flex items-center justify-center text-center text-sm" style={{ color: 'var(--zen-text-muted, #78716c)' }}>
-                                        <div>
-                                            <p className="mb-4">Translation not available yet</p>
-                                            <button
-                                                onClick={async () => {
-                                                    // Find the paragraph and trigger translation
-                                                    const paragraphElement = containerRef.current?.querySelector(`[data-paragraph-hash="${paragraphHash}"]`) as HTMLElement;
-                                                    if (paragraphElement) {
-                                                        // Trigger translation by simulating button click
-                                                        const translateButton = paragraphElement.querySelector('[data-translate-button]') as HTMLElement;
-                                                        if (translateButton) {
-                                                            translateButton.click();
-                                                        }
-                                                    }
-                                                }}
-                                                className="px-4 py-2 bg-rose-500 hover:bg-rose-600 text-white text-sm font-medium rounded-lg transition-colors"
-                                            >
-                                                Translate Now
-                                            </button>
-                                        </div>
-                                    </div>
-                                )}
-                            </div>
-                        );
-                    })()}
-                    {bottomPanelTab === 'note' && activeNoteContent && (
-                        <NoteEditorMobile
-                            key={activeNoteContent.paragraphHash}
-                            initialContent={activeNoteContent.content}
-                            onUpdate={activeNoteContent.onUpdate}
-                        />
-                    )}
-                    {bottomPanelTab === 'chat' && activeChatParagraphHash && (() => {
-                        const paragraphHash = activeChatParagraphHash;
-                        const threadId = `${id}|${paragraphHash}`;
-                        const paragraphElement = containerRef.current?.querySelector(`[data-paragraph-hash="${paragraphHash}"]`);
-                        const paragraphText = paragraphElement?.textContent || '';
-                        const cachedTranslation = translationMap.get(paragraphHash);
-                        const translation = cachedTranslation?.translatedText || null;
-                        
-                        return (
-                            <ChatAssistant
-                                bookId={id}
-                                paragraphHash={paragraphHash}
-                                paragraphText={paragraphText}
-                                translation={translation}
-                                isOpen={bottomPanelOpen && bottomPanelTab === 'chat'}
-                                onClose={() => {
-                                    if (bottomPanelTab === 'chat') {
-                                        setBottomPanelOpen(false);
-                                    }
-                                }}
-                                showAllChats={false}
-                                isMobile={true}
-                                onChatDeleted={() => {
-                                    const newMap = new Map(chatMap);
-                                    newMap.delete(threadId);
-                                    setChatMap(newMap);
-                                }}
-                                onChatCreated={() => {
-                                    const newMap = new Map(chatMap);
-                                    newMap.set(threadId, true);
-                                    setChatMap(newMap);
-                                }}
+                {/* Mobile Bottom Panel - Rendered in Portal for Complete Isolation */}
+                {isMobile && !zenMode && typeof window !== 'undefined' && createPortal(
+                    <MobileBottomPanel
+                        isOpen={bottomPanelOpen}
+                        activeTab={bottomPanelTab}
+                        onTabChange={handleTabChange}
+                        onClose={handleBottomPanelClose}
+                    >
+                        {/* Only render the active tab's content to minimize DOM */}
+                        {bottomPanelTab === 'translation' && translationContent}
+                        {bottomPanelTab === 'note' && activeNoteContent && (
+                            <NoteEditorMobile
+                                key={activeNoteContent.paragraphHash}
+                                initialContent={activeNoteContent.content}
+                                onUpdate={activeNoteContent.onUpdate}
                             />
-                        );
-                    })()}
-                </MobileBottomPanel>
-            )}
+                        )}
+                        {bottomPanelTab === 'chat' && chatContent}
+                    </MobileBottomPanel>,
+                    document.body
+                )}
 
             <SettingsModal 
                 isOpen={isSettingsOpen} 
