@@ -88,6 +88,7 @@ export default function SettingsModal({ isOpen, onClose, onSettingsChange }: Set
     const [bergamotModelLoaded, setBergamotModelLoaded] = useState(false);
     const [availableBergamotPairs, setAvailableBergamotPairs] = useState<Map<string, string[]>>(new Map());
     const [isLoadingBergamotPairs, setIsLoadingBergamotPairs] = useState(false);
+    const [bergamotRegistryError, setBergamotRegistryError] = useState<string | null>(null);
     const [translationPairInfo, setTranslationPairInfo] = useState<TranslationPairInfo | null>(null);
     const [googleAvailable, setGoogleAvailable] = useState(false);
     const [isSaving, setIsSaving] = useState(false);
@@ -110,19 +111,35 @@ export default function SettingsModal({ isOpen, onClose, onSettingsChange }: Set
     }, [isOpen]);
 
     // Load available Bergamot language pairs when Bergamot is selected
+    const loadBergamotPairs = async () => {
+        if (selectedEngine !== 'bergamot') return;
+        
+        setIsLoadingBergamotPairs(true);
+        setBergamotRegistryError(null);
+        
+        try {
+            const { getAvailableBergamotLanguagePairs, clearBergamotLanguagePairsCache } = await import('@/lib/translation');
+            // Clear cache before retry
+            clearBergamotLanguagePairsCache();
+            const pairs = await getAvailableBergamotLanguagePairs();
+            
+            if (pairs.size === 0) {
+                setBergamotRegistryError('Failed to load translation models. Please check your internet connection and try again.');
+            } else {
+                setAvailableBergamotPairs(pairs);
+                setBergamotRegistryError(null);
+            }
+        } catch (error) {
+            console.error('Failed to load Bergamot language pairs:', error);
+            setBergamotRegistryError(error instanceof Error ? error.message : 'Unknown error loading translation models');
+        } finally {
+            setIsLoadingBergamotPairs(false);
+        }
+    };
+    
     useEffect(() => {
         if (isOpen && selectedEngine === 'bergamot') {
-            setIsLoadingBergamotPairs(true);
-            getAvailableBergamotLanguagePairs()
-                .then((pairs) => {
-                    setAvailableBergamotPairs(pairs);
-                })
-                .catch((error) => {
-                    console.error('Failed to load Bergamot language pairs:', error);
-                })
-                .finally(() => {
-                    setIsLoadingBergamotPairs(false);
-                });
+            loadBergamotPairs();
         }
     }, [isOpen, selectedEngine]);
     
@@ -575,7 +592,39 @@ export default function SettingsModal({ isOpen, onClose, onSettingsChange }: Set
                                         Powered by Firefox Translation
                                     </a>
                                 </div>
-                                {isLoadingBergamotPairs ? (
+                                {bergamotRegistryError ? (
+                                    <div 
+                                        className="px-3 py-2 rounded-lg text-xs"
+                                        style={{ 
+                                            backgroundColor: 'rgba(239, 68, 68, 0.1)', 
+                                            borderWidth: '1px',
+                                            borderStyle: 'solid',
+                                            borderColor: 'rgba(239, 68, 68, 0.3)',
+                                            color: 'var(--zen-text)',
+                                        }}
+                                    >
+                                        <div className="flex items-start gap-2">
+                                            <span className="text-red-500 flex-shrink-0">⚠️</span>
+                                            <div className="flex-1">
+                                                <p style={{ color: 'var(--zen-text-muted)' }}>{bergamotRegistryError}</p>
+                                                <button
+                                                    onClick={loadBergamotPairs}
+                                                    disabled={isLoadingBergamotPairs}
+                                                    className="mt-2 px-3 py-1 rounded text-xs font-medium transition-all disabled:opacity-50"
+                                                    style={{
+                                                        backgroundColor: 'var(--zen-btn-bg)',
+                                                        borderWidth: '1px',
+                                                        borderStyle: 'solid',
+                                                        borderColor: 'var(--zen-btn-border)',
+                                                        color: 'var(--zen-text)',
+                                                    }}
+                                                >
+                                                    {isLoadingBergamotPairs ? 'Retrying...' : 'Retry'}
+                                                </button>
+                                            </div>
+                                        </div>
+                                    </div>
+                                ) : isLoadingBergamotPairs ? (
                                     <div className="text-xs text-center py-2" style={{ color: 'var(--zen-text-muted)' }}>
                                         Loading available language pairs...
                                     </div>

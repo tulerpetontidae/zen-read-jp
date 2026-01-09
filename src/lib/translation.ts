@@ -120,41 +120,96 @@ export async function translateWithOpenAI(
 // Map of language pair keys to translator instances
 const bergamotTranslators = new Map<string, any>();
 
-// Cache for available language pairs
+// Cache for available language pairs (only cache successful fetches)
 let availableLanguagePairsCache: Map<string, string[]> | null = null;
+
+/**
+ * Clear the language pairs cache (useful for retrying after errors)
+ */
+export function clearBergamotLanguagePairsCache(): void {
+  availableLanguagePairsCache = null;
+}
 
 /**
  * Fetch available language pairs from the Mozilla registry
  */
 export async function getAvailableBergamotLanguagePairs(): Promise<Map<string, string[]>> {
+  // Only run in browser environment
+  if (typeof window === 'undefined') {
+    console.warn('getAvailableBergamotLanguagePairs called outside browser - returning empty map');
+    return new Map();
+  }
+
+  // Only use cache in browser environment
   if (availableLanguagePairsCache) {
     return availableLanguagePairsCache;
   }
 
-  try {
-    const response = await fetch('https://storage.googleapis.com/moz-fx-translations-data--303e-prod-translations-data/db/models.json');
-    const data = await response.json();
-    
-    const pairs = new Map<string, string[]>();
-    
-    // Parse the registry format: { "models": { "ja-en": [...], "en-ja": [...] } }
-    for (const [pairKey, models] of Object.entries(data.models || {})) {
-      const [source, target] = pairKey.split('-');
-      if (source && target && Array.isArray(models) && models.length > 0) {
-        // Store both directions if available
-        if (!pairs.has(source)) {
-          pairs.set(source, []);
+  // Retry logic: try up to 3 times
+  let lastError: Error | null = null;
+  for (let attempt = 1; attempt <= 3; attempt++) {
+    try {
+      const response = await fetch('https://storage.googleapis.com/moz-fx-translations-data--303e-prod-translations-data/db/models.json', {
+        credentials: 'omit',
+        mode: 'cors',
+        cache: 'no-cache', // Always fetch fresh data
+      });
+      
+      if (!response.ok) {
+        throw new Error(`HTTP error! status: ${response.status}`);
+      }
+      
+      const data = await response.json();
+      
+      if (!data || !data.models) {
+        console.warn('Bergamot registry response missing models data:', data);
+        throw new Error('Invalid registry format: missing models');
+      }
+      
+      const pairs = new Map<string, string[]>();
+      
+      // Parse the registry format: { "models": { "ja-en": [...], "en-ja": [...] } }
+      for (const [pairKey, models] of Object.entries(data.models || {})) {
+        const [source, target] = pairKey.split('-');
+        if (source && target && Array.isArray(models) && models.length > 0) {
+          // Store both directions if available
+          if (!pairs.has(source)) {
+            pairs.set(source, []);
+          }
+          pairs.get(source)!.push(target);
         }
-        pairs.get(source)!.push(target);
+      }
+      
+      if (pairs.size === 0) {
+        console.warn('No language pairs found in Bergamot registry');
+        // Don't cache empty results - allow retry
+        return new Map();
+      }
+      
+      console.log(`Loaded ${pairs.size} source languages from Bergamot registry`);
+      
+      // Cache successful results
+      availableLanguagePairsCache = pairs;
+      return pairs;
+    } catch (error) {
+      lastError = error instanceof Error ? error : new Error(String(error));
+      console.error(`Failed to fetch Bergamot language pairs (attempt ${attempt}/3):`, lastError.message);
+      
+      // Wait before retry (exponential backoff)
+      if (attempt < 3) {
+        await new Promise(resolve => setTimeout(resolve, 1000 * attempt));
       }
     }
-    
-    availableLanguagePairsCache = pairs;
-    return pairs;
-  } catch (error) {
-    console.error('Failed to fetch Bergamot language pairs:', error);
-    return new Map();
   }
+  
+  // All retries failed
+  console.error('Failed to fetch Bergamot language pairs after 3 attempts:', lastError);
+  if (lastError instanceof Error && process.env.NODE_ENV === 'development') {
+    console.error('Error stack:', lastError.stack);
+  }
+  
+  // Don't cache errors - allow retry on next call
+  return new Map();
 }
 
 /**
@@ -184,6 +239,11 @@ export interface TranslationPairInfo {
  */
 export async function getTranslationPairInfo(source: string, target: string): Promise<TranslationPairInfo> {
   const pairs = await getAvailableBergamotLanguagePairs();
+  
+  // Log if pairs are empty (registry fetch likely failed)
+  if (pairs.size === 0) {
+    console.warn('Bergamot registry is empty - registry fetch may have failed. Check network tab for errors.');
+  }
   
   // Same language - no translation needed
   if (source === target) {
@@ -234,6 +294,11 @@ export async function getTranslationPairInfo(source: string, target: string): Pr
   }
   
   // No translation path available
+  if (pairs.size === 0) {
+    // If registry is empty, this is likely a fetch error
+    console.warn(`Translation pair ${source}→${target} appears unavailable, but registry may not have loaded.`);
+  }
+  
   return {
     available: false,
     isDirect: false,
