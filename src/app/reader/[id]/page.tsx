@@ -103,6 +103,20 @@ export default function ReaderPage({ params }: { params: Promise<{ id: string }>
         loadReaderSettings();
     }, [loadReaderSettings]);
 
+    // Refresh bookmark groups map (called when groups are updated)
+    const refreshBookmarkGroupMap = useCallback(async () => {
+        try {
+            const allBookmarkGroups = await db.bookmarkGroups.toArray();
+            const bgMap = new Map<string, { name: string; color: string }>();
+            allBookmarkGroups.forEach(g => {
+                bgMap.set(g.id, { name: g.name, color: g.color });
+            });
+            setBookmarkGroupMap(bgMap);
+        } catch (e) {
+            console.error('Failed to refresh bookmark groups:', e);
+        }
+    }, []);
+
     // Phase 1: Batch load all book-related data once on mount
     useEffect(() => {
         const batchLoadData = async () => {
@@ -157,6 +171,22 @@ export default function ReaderPage({ params }: { params: Promise<{ id: string }>
 
         batchLoadData();
     }, [id]);
+
+    // Refresh bookmark groups when settings modal closes (in case groups were updated)
+    useEffect(() => {
+        if (!isSettingsOpen) {
+            // Settings modal just closed - refresh bookmark groups
+            refreshBookmarkGroupMap();
+        }
+    }, [isSettingsOpen, refreshBookmarkGroupMap]);
+
+    // Periodically refresh bookmark groups map (every 2 seconds) to catch external changes
+    useEffect(() => {
+        const interval = setInterval(() => {
+            refreshBookmarkGroupMap();
+        }, 2000);
+        return () => clearInterval(interval);
+    }, [refreshBookmarkGroupMap]);
 
     // Get current font family, max width, and font size from settings
     const currentFont = FONT_OPTIONS.find(f => f.value === readerFont) || FONT_OPTIONS[0];
@@ -935,8 +965,16 @@ export default function ReaderPage({ params }: { params: Promise<{ id: string }>
 
             <SettingsModal 
                 isOpen={isSettingsOpen} 
-                onClose={() => setIsSettingsOpen(false)}
-                onSettingsChange={loadReaderSettings}
+                onClose={() => {
+                    setIsSettingsOpen(false);
+                    // Refresh bookmark groups when settings modal closes
+                    refreshBookmarkGroupMap();
+                }}
+                onSettingsChange={() => {
+                    loadReaderSettings();
+                    // Also refresh bookmark groups when settings change
+                    refreshBookmarkGroupMap();
+                }}
             />
         </div>
     );

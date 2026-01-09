@@ -132,8 +132,26 @@ const TranslatableParagraph = React.memo(function TranslatableParagraph({
                 setCurrentBookmarkGroupId(null);
                 setBookmarkGroupColor(null);
             }
+        } else {
+            // Clear bookmark if no cached bookmark
+            setCurrentBookmarkGroupId(null);
+            setBookmarkGroupColor(null);
         }
     }, [cachedTranslation, cachedNote, cachedHasChat, cachedBookmark, bookmarkGroupMap]);
+
+    // Also update bookmark color when bookmarkGroupMap changes (for when group colors are updated)
+    useEffect(() => {
+        if (currentBookmarkGroupId && bookmarkGroupMap) {
+            const group = bookmarkGroupMap.get(currentBookmarkGroupId);
+            if (group) {
+                setBookmarkGroupColor(group.color);
+            } else {
+                // Group was deleted, clear bookmark
+                setCurrentBookmarkGroupId(null);
+                setBookmarkGroupColor(null);
+            }
+        }
+    }, [currentBookmarkGroupId, bookmarkGroupMap]);
     
     // Track previous showAll states to detect changes
     const prevShowAllTranslationsRef = useRef(showAllTranslations);
@@ -811,6 +829,26 @@ const TranslatableParagraph = React.memo(function TranslatableParagraph({
                 </div>
             )}
         </div>
+    );
+}, (prevProps, nextProps) => {
+    // Custom comparison: re-render if bookmarkGroupMap changes
+    // Check if bookmarkGroupMap reference changed (it will be a new Map instance when refreshed)
+    if (prevProps.bookmarkGroupMap !== nextProps.bookmarkGroupMap) {
+        return false; // Re-render
+    }
+    // For other props, use default shallow comparison
+    return (
+        prevProps.bookId === nextProps.bookId &&
+        prevProps.paragraphText === nextProps.paragraphText &&
+        prevProps.paragraphHash === nextProps.paragraphHash &&
+        prevProps.showAllTranslations === nextProps.showAllTranslations &&
+        prevProps.showAllComments === nextProps.showAllComments &&
+        prevProps.showAllChats === nextProps.showAllChats &&
+        prevProps.zenMode === nextProps.zenMode &&
+        prevProps.cachedTranslation === nextProps.cachedTranslation &&
+        prevProps.cachedNote === nextProps.cachedNote &&
+        prevProps.cachedBookmark === nextProps.cachedBookmark &&
+        prevProps.cachedHasChat === nextProps.cachedHasChat
     );
 });
 
