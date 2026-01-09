@@ -70,6 +70,7 @@ export default function Home() {
   const [masterTypingText, setMasterTypingText] = useState("日本語");
   const [editingLanguageId, setEditingLanguageId] = useState<string | null>(null);
   const [editLanguage, setEditLanguage] = useState("");
+  const [deletingBookId, setDeletingBookId] = useState<string | null>(null);
 
   // Track initial animation so first load shows full JP/日本語 without typing
   const hasInitialTitleAnimationRunRef = useRef(false);
@@ -210,12 +211,31 @@ export default function Home() {
     updateCovers();
   }, [books]);
 
-  const deleteBook = async (e: React.MouseEvent, id: string) => {
+  const handleDeleteBook = (e: React.MouseEvent, id: string) => {
     e.preventDefault();
     e.stopPropagation();
-    if (confirm("Are you sure you want to delete this book?")) {
-      await db.books.delete(id);
-      await db.progress.delete(id);
+    setDeletingBookId(id); // Show confirmation modal
+  };
+
+  const confirmDeleteBook = async () => {
+    if (!deletingBookId) return;
+    
+    try {
+      // Delete book and its progress
+      await db.books.delete(deletingBookId);
+      await db.progress.delete(deletingBookId);
+      
+      // Also delete all related data (translations, notes, chats, bookmarks)
+      await Promise.all([
+        db.translations.where('bookId').equals(deletingBookId).delete(),
+        db.notes.where('bookId').equals(deletingBookId).delete(),
+        db.chats.where('bookId').equals(deletingBookId).delete(),
+        db.bookmarks.where('bookId').equals(deletingBookId).delete(),
+      ]);
+    } catch (e) {
+      console.error('Failed to delete book:', e);
+    } finally {
+      setDeletingBookId(null); // Close confirmation modal
     }
   };
 
@@ -532,7 +552,7 @@ export default function Home() {
                     <button
                       onClick={(e) => {
                         e.stopPropagation();
-                        deleteBook(e, book.id);
+                        handleDeleteBook(e, book.id);
                       }}
                       className="p-2 hover:text-rose-500 rounded-full transition-all"
                       style={{ color: 'var(--zen-text-muted, #d6d3d1)' }}
@@ -541,6 +561,79 @@ export default function Home() {
                       <RiDeleteBinLine size={16} />
                     </button>
                   </div>
+
+                  {/* Delete Confirmation Modal */}
+                  {deletingBookId === book.id && (
+                    <div
+                      className="absolute inset-0 flex items-center justify-center z-50 rounded-3xl"
+                      style={{
+                        backgroundColor: 'rgba(0, 0, 0, 0.3)',
+                        backdropFilter: 'blur(4px)',
+                      }}
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        setDeletingBookId(null);
+                      }}
+                    >
+                      <div
+                        className="px-4 py-3 rounded-xl shadow-lg max-w-xs mx-4"
+                        style={{
+                          backgroundColor: 'var(--zen-note-bg, white)',
+                          borderWidth: '2px',
+                          borderStyle: 'solid',
+                          borderColor: 'var(--zen-note-border, #fcd34d)',
+                          color: 'var(--zen-text, #1c1917)',
+                          textAlign: 'center',
+                        }}
+                        onClick={(e) => e.stopPropagation()}
+                      >
+                        <div className="mb-3 text-sm font-medium">Delete this book?</div>
+                        <p className="text-xs mb-4" style={{ color: 'var(--zen-text-muted, #78716c)' }}>
+                          All translations, notes, chats, and bookmarks will be removed. This cannot be undone.
+                        </p>
+                        <div className="flex gap-2 justify-center">
+                          <button
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              confirmDeleteBook();
+                            }}
+                            className="px-3 py-1 rounded text-xs font-medium transition-colors"
+                            style={{
+                              backgroundColor: 'rgba(220, 38, 38, 0.9)',
+                              color: 'white',
+                            }}
+                            onMouseEnter={(e) => {
+                              e.currentTarget.style.backgroundColor = 'rgba(220, 38, 38, 1)';
+                            }}
+                            onMouseLeave={(e) => {
+                              e.currentTarget.style.backgroundColor = 'rgba(220, 38, 38, 0.9)';
+                            }}
+                          >
+                            Delete
+                          </button>
+                          <button
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              setDeletingBookId(null);
+                            }}
+                            className="px-3 py-1 rounded text-xs font-medium transition-colors"
+                            style={{
+                              backgroundColor: 'rgba(245, 245, 244, 0.9)',
+                              color: '#1c1917',
+                            }}
+                            onMouseEnter={(e) => {
+                              e.currentTarget.style.backgroundColor = 'rgba(245, 245, 244, 1)';
+                            }}
+                            onMouseLeave={(e) => {
+                              e.currentTarget.style.backgroundColor = 'rgba(245, 245, 244, 0.9)';
+                            }}
+                          >
+                            Cancel
+                          </button>
+                        </div>
+                      </div>
+                    </div>
+                  )}
                 </div>
               ))}
             </div>

@@ -75,6 +75,13 @@ export default function ReaderPage({ params }: { params: Promise<{ id: string }>
     const [zenMode, setZenMode] = useState(false);
     const [notesVersion, setNotesVersion] = useState(0);
     const [bookmarksVersion, setBookmarksVersion] = useState(0);
+    
+    // Batch-loaded data lookup maps (Phase 1: Batch Database Queries)
+    const [translationMap, setTranslationMap] = useState<Map<string, { translatedText: string; originalText: string }>>(new Map());
+    const [noteMap, setNoteMap] = useState<Map<string, { content: string; height?: number }>>(new Map());
+    const [bookmarkMap, setBookmarkMap] = useState<Map<string, { colorGroupId: string }>>(new Map());
+    const [chatMap, setChatMap] = useState<Map<string, boolean>>(new Map()); // Maps threadId to hasChat boolean
+    const [bookmarkGroupMap, setBookmarkGroupMap] = useState<Map<string, { name: string; color: string }>>(new Map());
 
     // Load reader settings
     const loadReaderSettings = useCallback(async () => {
@@ -95,6 +102,61 @@ export default function ReaderPage({ params }: { params: Promise<{ id: string }>
     useEffect(() => {
         loadReaderSettings();
     }, [loadReaderSettings]);
+
+    // Phase 1: Batch load all book-related data once on mount
+    useEffect(() => {
+        const batchLoadData = async () => {
+            try {
+                const [allTranslations, allNotes, allBookmarks, allChats, allBookmarkGroups] = await Promise.all([
+                    db.translations.where('bookId').equals(id).toArray(),
+                    db.notes.where('bookId').equals(id).toArray(),
+                    db.bookmarks.where('bookId').equals(id).toArray(),
+                    db.chats.where('bookId').equals(id).toArray(),
+                    db.bookmarkGroups.toArray(),
+                ]);
+
+                // Create translation lookup map: paragraphHash -> { translatedText, originalText }
+                const tMap = new Map<string, { translatedText: string; originalText: string }>();
+                allTranslations.forEach(t => {
+                    tMap.set(t.paragraphHash, { translatedText: t.translatedText, originalText: t.originalText });
+                });
+
+                // Create note lookup map: paragraphHash -> { content, height }
+                const nMap = new Map<string, { content: string; height?: number }>();
+                allNotes.forEach(n => {
+                    nMap.set(n.paragraphHash, { content: n.content, height: n.height });
+                });
+
+                // Create bookmark lookup map: paragraphHash -> { colorGroupId }
+                const bMap = new Map<string, { colorGroupId: string }>();
+                allBookmarks.forEach(b => {
+                    bMap.set(b.paragraphHash, { colorGroupId: b.colorGroupId });
+                });
+
+                // Create chat lookup map: threadId -> hasChat (boolean)
+                const cMap = new Map<string, boolean>();
+                allChats.forEach(chat => {
+                    cMap.set(chat.threadId, true);
+                });
+
+                // Create bookmark group lookup map: groupId -> { name, color }
+                const bgMap = new Map<string, { name: string; color: string }>();
+                allBookmarkGroups.forEach(g => {
+                    bgMap.set(g.id, { name: g.name, color: g.color });
+                });
+
+                setTranslationMap(tMap);
+                setNoteMap(nMap);
+                setBookmarkMap(bMap);
+                setChatMap(cMap);
+                setBookmarkGroupMap(bgMap);
+            } catch (e) {
+                console.error('Failed to batch load book data:', e);
+            }
+        };
+
+        batchLoadData();
+    }, [id]);
 
     // Get current font family, max width, and font size from settings
     const currentFont = FONT_OPTIONS.find(f => f.value === readerFont) || FONT_OPTIONS[0];
@@ -131,6 +193,17 @@ export default function ReaderPage({ params }: { params: Promise<{ id: string }>
         return <p>{children}</p>; // Fallback
     };
 
+    // Helper function for paragraph hash (matching TranslatableParagraph implementation)
+    const hashText = (text: string): string => {
+        let hash = 0;
+        for (let i = 0; i < text.length; i++) {
+            const char = text.charCodeAt(i);
+            hash = ((hash << 5) - hash) + char;
+            hash = hash & hash;
+        }
+        return hash.toString(36);
+    };
+
     // Parser options to wrap paragraphs with TranslatableParagraph
     const parserOptions: HTMLReactParserOptions = useMemo(() => ({
         replace: (domNode) => {
@@ -152,16 +225,74 @@ export default function ReaderPage({ params }: { params: Promise<{ id: string }>
                     
                     // Only wrap if there's actual text content (not just images)
                     if (textContent.trim().length > 0) {
+                        const paragraphHash = hashText(textContent);
+                        const translationId = `${id}-${paragraphHash}`;
+                        const threadId = `${id}|${paragraphHash}`;
+                        
+                        // Get cached data from lookup maps
+                        const cachedTranslation = translationMap.get(paragraphHash);
+                        const cachedNote = noteMap.get(paragraphHash);
+                        const cachedBookmark = bookmarkMap.get(paragraphHash);
+                        const hasChat = chatMap.has(threadId);
+                        
                         return (
                             <TranslatableParagraph 
                                 bookId={id} 
                                 paragraphText={textContent}
+                                paragraphHash={paragraphHash}
                                 showAllTranslations={showAllTranslations}
                                 showAllComments={showAllComments}
                                 showAllChats={showAllChats}
                                 zenMode={zenMode}
-                                onNoteChange={() => setNotesVersion(prev => prev + 1)}
-                                onBookmarkChange={() => setBookmarksVersion(prev => prev + 1)}
+                                // Pre-loaded data from lookup maps
+                                cachedTranslation={cachedTranslation}
+                                cachedNote={cachedNote}
+                                cachedBookmark={cachedBookmark}
+                                cachedHasChat={hasChat}
+                                bookmarkGroupMap={bookmarkGroupMap}
+                                // Callbacks for data updates
+                                onTranslationUpdate={(hash, translation) => {
+                                    // Update map when translation is added/updated
+                                    const newMap = new Map(translationMap);
+                                    if (translation) {
+                                        newMap.set(hash, translation);
+                                    } else {
+                                        newMap.delete(hash);
+                                    }
+                                    setTranslationMap(newMap);
+                                }}
+                                onNoteUpdate={(hash, note) => {
+                                    // Update map when note is added/updated/deleted
+                                    const newMap = new Map(noteMap);
+                                    if (note) {
+                                        newMap.set(hash, note);
+                                    } else {
+                                        newMap.delete(hash);
+                                    }
+                                    setNoteMap(newMap);
+                                    setNotesVersion(prev => prev + 1);
+                                }}
+                                onBookmarkUpdate={(hash, bookmark) => {
+                                    // Update map when bookmark is added/updated/deleted
+                                    const newMap = new Map(bookmarkMap);
+                                    if (bookmark) {
+                                        newMap.set(hash, bookmark);
+                                    } else {
+                                        newMap.delete(hash);
+                                    }
+                                    setBookmarkMap(newMap);
+                                    setBookmarksVersion(prev => prev + 1);
+                                }}
+                                onChatUpdate={(threadId, hasChat) => {
+                                    // Update map when chat is added/deleted
+                                    const newMap = new Map(chatMap);
+                                    if (hasChat) {
+                                        newMap.set(threadId, true);
+                                    } else {
+                                        newMap.delete(threadId);
+                                    }
+                                    setChatMap(newMap);
+                                }}
                             >
                                 {getParagraphWrapper(domNode, children)}
                             </TranslatableParagraph>
@@ -171,7 +302,7 @@ export default function ReaderPage({ params }: { params: Promise<{ id: string }>
             }
             return undefined;
             }
-        }), [id, showAllTranslations, showAllComments, showAllChats, zenMode, bookmarksVersion]);
+        }), [id, showAllTranslations, showAllComments, showAllChats, zenMode, bookmarksVersion, translationMap, noteMap, bookmarkMap, chatMap, bookmarkGroupMap]);
 
     useEffect(() => {
         let bookInstance: Book | null = null;
@@ -312,12 +443,59 @@ export default function ReaderPage({ params }: { params: Promise<{ id: string }>
         };
     }, [id]);
 
-    // Save scroll position to DB
+    // Save scroll position to DB with enhanced position data
     const saveScrollPosition = async (scrollPct: number) => {
         try {
+            if (!containerRef.current) return;
+            
+            const container = containerRef.current;
+            const scrollTop = container.scrollTop;
+            const scrollHeight = container.scrollHeight - container.clientHeight;
+            
+            // Find the paragraph element closest to the scroll position
+            const paragraphs = container.querySelectorAll<HTMLElement>('[data-paragraph-hash]');
+            let closestParagraph: HTMLElement | null = null;
+            let closestDistance = Infinity;
+            const viewportTop = scrollTop;
+            
+            for (let j = 0; j < paragraphs.length; j++) {
+                const para = paragraphs[j];
+                const rect = para.getBoundingClientRect();
+                const containerRect = container.getBoundingClientRect();
+                const paraTop = rect.top - containerRect.top + scrollTop;
+                const distance = Math.abs(paraTop - viewportTop);
+                
+                if (distance < closestDistance) {
+                    closestDistance = distance;
+                    closestParagraph = para;
+                }
+            }
+            
+            // Extract paragraph hash and calculate section index
+            let paragraphHash: string | undefined;
+            let sectionIndex: number | undefined;
+            
+            if (closestParagraph) {
+                paragraphHash = closestParagraph.getAttribute('data-paragraph-hash') || undefined;
+                
+                // Find which section contains this paragraph
+                if (paragraphHash) {
+                    const sectionElements = container.querySelectorAll<HTMLElement>('.epub-section');
+                    for (let i = 0; i < sectionElements.length; i++) {
+                        if (sectionElements[i].contains(closestParagraph)) {
+                            sectionIndex = i;
+                            break;
+                        }
+                    }
+                }
+            }
+            
             await db.progress.put({
                 bookId: id,
                 scrollPosition: scrollPct,
+                scrollOffset: scrollTop,
+                paragraphHash,
+                sectionIndex,
                 updatedAt: Date.now()
             });
         } catch (e) {
@@ -325,26 +503,73 @@ export default function ReaderPage({ params }: { params: Promise<{ id: string }>
         }
     };
 
-    // Restore scroll position when sections are loaded
+    // Smart position restoration: single jump, as early as possible, accurately
+    const positionRestoredRef = useRef(false);
+    const savedPositionRef = useRef<{ scrollPosition: number; sectionIndex?: number; scrollOffset?: number; paragraphHash?: string } | null>(null);
+    
+    // Load saved position FIRST (before book loading)
     useEffect(() => {
-        if (sections.length === 0 || isLoading) return;
-
-        const restorePosition = async () => {
+        const loadSavedPosition = async () => {
             try {
                 const savedProgress = await db.progress.get(id);
-                if (savedProgress && containerRef.current) {
-                    const container = containerRef.current;
-                    // Wait for content to render
-                    requestAnimationFrame(() => {
-                        const scrollHeight = container.scrollHeight - container.clientHeight;
-                        const targetScroll = (savedProgress.scrollPosition / 100) * scrollHeight;
-                        container.scrollTop = targetScroll;
-                        setProgress(Math.round(savedProgress.scrollPosition));
-                    });
+                if (savedProgress) {
+                    savedPositionRef.current = {
+                        scrollPosition: savedProgress.scrollPosition,
+                        sectionIndex: savedProgress.sectionIndex,
+                        scrollOffset: savedProgress.scrollOffset,
+                        paragraphHash: savedProgress.paragraphHash,
+                    };
                 }
             } catch (e) {
-                console.error('Failed to restore scroll position:', e);
+                console.error('Failed to load saved position:', e);
             }
+        };
+        loadSavedPosition();
+    }, [id]);
+
+    // Single jump position restoration (no jitter)
+    useEffect(() => {
+        if (positionRestoredRef.current || !savedPositionRef.current || sections.length === 0 || isLoading) return;
+        if (!containerRef.current) return;
+
+        const restorePosition = () => {
+            const container = containerRef.current!;
+            const saved = savedPositionRef.current!;
+            
+            // Wait for DOM to render with double requestAnimationFrame for accurate layout
+            requestAnimationFrame(() => {
+                requestAnimationFrame(() => {
+                    let targetScroll = 0;
+                    
+                    // Method 1 (Best): Find by paragraph hash (most accurate)
+                    if (saved.paragraphHash) {
+                        const element = container.querySelector(`[data-paragraph-hash="${saved.paragraphHash}"]`);
+                        if (element) {
+                            const rect = element.getBoundingClientRect();
+                            const containerRect = container.getBoundingClientRect();
+                            targetScroll = container.scrollTop + rect.top - containerRect.top - 100; // 100px offset from top
+                        }
+                    }
+                    
+                    // Method 2: Use stored scroll offset (if sections above loaded)
+                    if (targetScroll === 0 && saved.scrollOffset !== undefined) {
+                        targetScroll = saved.scrollOffset;
+                    }
+                    
+                    // Method 3: Use percentage of current loaded height (fallback)
+                    if (targetScroll === 0) {
+                        const scrollHeight = container.scrollHeight - container.clientHeight;
+                        targetScroll = (saved.scrollPosition / 100) * scrollHeight;
+                    }
+                    
+                    // Single jump - no smooth scrolling to avoid jitter
+                    container.scrollTop = targetScroll;
+                    setProgress(Math.round(saved.scrollPosition));
+                    
+                    // Mark as restored to prevent future jumps
+                    positionRestoredRef.current = true;
+                });
+            });
         };
 
         restorePosition();

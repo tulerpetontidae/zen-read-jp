@@ -17,6 +17,9 @@ interface WebConfig {
 interface Progress {
   bookId: string;
   scrollPosition: number; // scroll percentage 0-100
+  sectionIndex?: number; // Index of section containing saved position
+  scrollOffset?: number; // Absolute scroll position in pixels
+  paragraphHash?: string; // Hash of paragraph at saved position for precise restoration
   updatedAt: number;
 }
 

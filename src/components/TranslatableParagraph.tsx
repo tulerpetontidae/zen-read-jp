@@ -23,24 +23,42 @@ interface TranslatableParagraphProps {
     children: React.ReactNode;
     bookId: string;
     paragraphText: string;
+    paragraphHash: string; // Pre-calculated hash passed from parent
     showAllTranslations?: boolean;
     showAllComments?: boolean;
     showAllChats?: boolean;
     zenMode?: boolean;
-    onNoteChange?: () => void;
-    onBookmarkChange?: () => void;
+    // Pre-loaded data from lookup maps (Phase 1: Batch Database Queries)
+    cachedTranslation?: { translatedText: string; originalText: string } | null;
+    cachedNote?: { content: string; height?: number } | null;
+    cachedBookmark?: { colorGroupId: string } | null;
+    cachedHasChat?: boolean;
+    bookmarkGroupMap?: Map<string, { name: string; color: string }>;
+    // Callbacks for data updates (to update lookup maps in parent)
+    onTranslationUpdate?: (paragraphHash: string, translation: { translatedText: string; originalText: string } | null) => void;
+    onNoteUpdate?: (paragraphHash: string, note: { content: string; height?: number } | null) => void;
+    onBookmarkUpdate?: (paragraphHash: string, bookmark: { colorGroupId: string } | null) => void;
+    onChatUpdate?: (threadId: string, hasChat: boolean) => void;
 }
 
-export default function TranslatableParagraph({ 
+const TranslatableParagraph = React.memo(function TranslatableParagraph({ 
     children, 
     bookId, 
     paragraphText,
+    paragraphHash, // Use pre-calculated hash from parent
     showAllTranslations = false,
     showAllComments = false,
     showAllChats = false,
     zenMode = false,
-    onNoteChange,
-    onBookmarkChange
+    cachedTranslation = null,
+    cachedNote = null,
+    cachedBookmark = null,
+    cachedHasChat = false,
+    bookmarkGroupMap = new Map(),
+    onTranslationUpdate,
+    onNoteUpdate,
+    onBookmarkUpdate,
+    onChatUpdate,
 }: TranslatableParagraphProps) {
     // Hover state
     const [isHovered, setIsHovered] = useState(false);
@@ -75,58 +93,47 @@ export default function TranslatableParagraph({
     const noteTextareaRef = useRef<HTMLTextAreaElement>(null);
     const hoverTimeoutRef = useRef<NodeJS.Timeout | null>(null);
 
-    const paragraphHash = hashText(paragraphText);
+    // Use pre-calculated paragraphHash from parent (no need to recalculate)
     const translationId = `${bookId}-${paragraphHash}`;
     const noteId = `${bookId}-${paragraphHash}`;
     const threadId = `${bookId}|${paragraphHash}`;
     const bookmarkId = `${bookId}-${paragraphHash}`;
 
-    // Check for cached translation, note, chat, and bookmark on mount
+    // Phase 1: Use pre-loaded data from lookup maps instead of DB queries
     useEffect(() => {
-        const loadCachedData = async () => {
-            try {
-                const [cachedTranslation, cachedNote, chatMessages, cachedBookmark] = await Promise.all([
-                    db.translations.get(translationId),
-                    db.notes.get(noteId),
-                    db.chats.where('threadId').equals(threadId).toArray(),
-                    db.bookmarks.get(bookmarkId),
-                ]);
-                if (cachedTranslation) {
-                    setTranslation(cachedTranslation.translatedText);
-                }
-                if (cachedNote) {
-                    setNoteContent(cachedNote.content);
-                    setSavedNoteContent(cachedNote.content);
-                    // Restore note height if saved
-                    if (cachedNote.height) {
-                        setNoteHeight(cachedNote.height);
-                    }
-                }
-                if (chatMessages && chatMessages.length > 0) {
-                    setHasChat(true);
-                }
-                if (cachedBookmark) {
-                    setCurrentBookmarkGroupId(cachedBookmark.colorGroupId);
-                    // Load the bookmark group to get the color
-                    try {
-                        const group = await db.bookmarkGroups.get(cachedBookmark.colorGroupId);
-                        if (group) {
-                            setBookmarkGroupColor(group.color);
-                        } else {
-                            // Group might have been deleted, clear bookmark
-                            setCurrentBookmarkGroupId(null);
-                            setBookmarkGroupColor(null);
-                        }
-                    } catch (e) {
-                        console.error('Failed to load bookmark group:', e);
-                    }
-                }
-            } catch (e) {
-                console.error('Failed to load cached data:', e);
+        // Set translation from cached data
+        if (cachedTranslation) {
+            setTranslation(cachedTranslation.translatedText);
+        }
+        
+        // Set note from cached data
+        if (cachedNote) {
+            setNoteContent(cachedNote.content);
+            setSavedNoteContent(cachedNote.content);
+            if (cachedNote.height) {
+                setNoteHeight(cachedNote.height);
             }
-        };
-        loadCachedData();
-    }, [translationId, noteId, threadId, bookmarkId]);
+        }
+        
+        // Set chat state from cached data
+        if (cachedHasChat) {
+            setHasChat(true);
+        }
+        
+        // Set bookmark from cached data
+        if (cachedBookmark) {
+            setCurrentBookmarkGroupId(cachedBookmark.colorGroupId);
+            // Get color from bookmarkGroupMap
+            const group = bookmarkGroupMap.get(cachedBookmark.colorGroupId);
+            if (group) {
+                setBookmarkGroupColor(group.color);
+            } else {
+                // Group might have been deleted, clear bookmark
+                setCurrentBookmarkGroupId(null);
+                setBookmarkGroupColor(null);
+            }
+        }
+    }, [cachedTranslation, cachedNote, cachedHasChat, cachedBookmark, bookmarkGroupMap]);
     
     // Track previous showAll states to detect changes
     const prevShowAllTranslationsRef = useRef(showAllTranslations);
@@ -287,7 +294,7 @@ export default function TranslatableParagraph({
                 throw new Error('Translation failed - no result received');
             }
 
-            // Cache the translation
+            // Cache the translation in DB
             await db.translations.put({
                 id: translationId,
                 bookId,
@@ -296,6 +303,11 @@ export default function TranslatableParagraph({
                 translatedText,
                 createdAt: Date.now(),
             });
+
+            // Update parent's lookup map
+            if (onTranslationUpdate) {
+                onTranslationUpdate(paragraphHash, { translatedText, originalText: paragraphText });
+            }
 
             setTranslation(translatedText);
             setShowTranslation(true);
@@ -308,11 +320,16 @@ export default function TranslatableParagraph({
     };
 
     const handleRedoTranslation = async () => {
-        // Clear cached translation
+        // Clear cached translation from DB
         try {
             await db.translations.delete(translationId);
         } catch (e) {
             console.error('Failed to clear translation cache:', e);
+        }
+
+        // Update parent's lookup map
+        if (onTranslationUpdate) {
+            onTranslationUpdate(paragraphHash, null);
         }
 
         // Reset state
@@ -347,12 +364,21 @@ export default function TranslatableParagraph({
                     createdAt: savedNoteContent ? Date.now() : Date.now(),
                     updatedAt: Date.now(),
                 });
+                
+                // Update parent's lookup map
+                if (onNoteUpdate) {
+                    onNoteUpdate(paragraphHash, { content: noteContent, height: noteHeight });
+                }
             } else {
                 // Delete note if empty
                 await db.notes.delete(noteId);
+                
+                // Update parent's lookup map
+                if (onNoteUpdate) {
+                    onNoteUpdate(paragraphHash, null);
+                }
             }
             setSavedNoteContent(noteContent);
-            if (onNoteChange) onNoteChange();
         } catch (e) {
             console.error('Failed to save note:', e);
         } finally {
@@ -387,29 +413,55 @@ export default function TranslatableParagraph({
     };
 
     const handleBookmarkSelect = async (colorGroupId: string | null) => {
+        const bookmarkId = `${bookId}-${paragraphHash}`;
+        
         if (colorGroupId) {
-            // Load the bookmark group to get the color first
-            try {
-                const group = await db.bookmarkGroups.get(colorGroupId);
-                if (group) {
+            // Get color from bookmarkGroupMap (already loaded)
+            const group = bookmarkGroupMap.get(colorGroupId);
+            if (group) {
+                // Save bookmark to DB
+                try {
+                    await db.bookmarks.put({
+                        id: bookmarkId,
+                        bookId,
+                        paragraphHash,
+                        colorGroupId,
+                        createdAt: currentBookmarkGroupId ? Date.now() : Date.now(),
+                        updatedAt: Date.now(),
+                    });
+                    
+                    // Update parent's lookup map
+                    if (onBookmarkUpdate) {
+                        onBookmarkUpdate(paragraphHash, { colorGroupId });
+                    }
+                    
                     setBookmarkGroupColor(group.color);
                     setCurrentBookmarkGroupId(colorGroupId);
-                } else {
-                    console.error('Bookmark group not found:', colorGroupId);
-                    setCurrentBookmarkGroupId(null);
-                    setBookmarkGroupColor(null);
+                } catch (e) {
+                    console.error('Failed to save bookmark:', e);
                 }
-            } catch (e) {
-                console.error('Failed to load bookmark group:', e);
+            } else {
+                console.error('Bookmark group not found:', colorGroupId);
                 setCurrentBookmarkGroupId(null);
                 setBookmarkGroupColor(null);
             }
         } else {
-            setCurrentBookmarkGroupId(null);
-            setBookmarkGroupColor(null);
+            // Remove bookmark
+            try {
+                await db.bookmarks.delete(bookmarkId);
+                
+                // Update parent's lookup map
+                if (onBookmarkUpdate) {
+                    onBookmarkUpdate(paragraphHash, null);
+                }
+                
+                setCurrentBookmarkGroupId(null);
+                setBookmarkGroupColor(null);
+            } catch (e) {
+                console.error('Failed to remove bookmark:', e);
+            }
         }
         setIsBookmarkSelectorOpen(false);
-        if (onBookmarkChange) onBookmarkChange();
     };
     
     const handleChatClick = (e: React.MouseEvent) => {
@@ -422,22 +474,10 @@ export default function TranslatableParagraph({
         }
     };
     
-    // Update hasChat when chat messages are added (listen to database changes)
+    // Update hasChat from cached data (no need to query DB)
     useEffect(() => {
-        const checkChatExists = async () => {
-            try {
-                const chatMessages = await db.chats.where('threadId').equals(threadId).toArray();
-                setHasChat(chatMessages.length > 0);
-            } catch (e) {
-                console.error('Failed to check chat:', e);
-            }
-        };
-        
-        // Check periodically and on mount
-        checkChatExists();
-        const interval = setInterval(checkChatExists, 2000);
-        return () => clearInterval(interval);
-    }, [threadId]);
+        setHasChat(cachedHasChat);
+    }, [cachedHasChat]);
 
     return (
         <div 
@@ -693,6 +733,17 @@ export default function TranslatableParagraph({
                     onChatDeleted={() => {
                         setHasChat(false);
                         setIsChatOpen(false);
+                        // Update parent's lookup map
+                        if (onChatUpdate) {
+                            onChatUpdate(threadId, false);
+                        }
+                    }}
+                    onChatCreated={() => {
+                        setHasChat(true);
+                        // Update parent's lookup map
+                        if (onChatUpdate) {
+                            onChatUpdate(threadId, true);
+                        }
                     }}
                 />
             )}
@@ -761,5 +812,7 @@ export default function TranslatableParagraph({
             )}
         </div>
     );
-}
+});
+
+export default TranslatableParagraph;
 

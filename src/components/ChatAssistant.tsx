@@ -23,6 +23,7 @@ interface ChatAssistantProps {
   noteHeight?: number; // Height of note if open, to position chat below it
   isNoteOpen?: boolean; // Whether note is currently open
   onChatDeleted?: () => void; // Callback when chat is deleted
+  onChatCreated?: () => void; // Callback when chat is created (first message)
 }
 
 export default function ChatAssistant({
@@ -36,6 +37,7 @@ export default function ChatAssistant({
   noteHeight = 0,
   isNoteOpen = false,
   onChatDeleted,
+  onChatCreated,
 }: ChatAssistantProps) {
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [inputValue, setInputValue] = useState('');
@@ -109,6 +111,12 @@ export default function ChatAssistant({
         content,
         createdAt: Date.now(),
       });
+      
+      // Notify parent if this is the first message (chat created)
+      if (messages.length === 0 && onChatCreated) {
+        onChatCreated();
+      }
+      
       return messageId;
     } catch (e) {
       console.error('Failed to save message:', e);
