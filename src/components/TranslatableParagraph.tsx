@@ -229,7 +229,7 @@ const TranslatableParagraph = React.memo(function TranslatableParagraph({
     // Mobile: handle paragraph tap
     const handleParagraphClick = (e: React.MouseEvent) => {
         if (isMobile && !zenMode) {
-            // Don't show buttons if clicking on a button, interactive element, or bookmark selector
+            // Don't open panel if clicking on a button, interactive element, or bookmark selector
             const target = e.target as HTMLElement;
             if (target.closest('button') || target.closest('textarea') || target.closest('input')) {
                 return;
@@ -240,21 +240,20 @@ const TranslatableParagraph = React.memo(function TranslatableParagraph({
                 return;
             }
             
-            // Activate this paragraph
+            // Activate this paragraph and open bottom panel with translation tab,
+            // but DO NOT start translation automatically
             dataStore.setActiveParagraphHash(paragraphHash);
-            
-            // Toggle tap state
-            setIsTapped(!isTapped);
-            
-            // Auto-hide after 3 seconds if not interacting
-            if (tapTimeoutRef.current) {
-                clearTimeout(tapTimeoutRef.current);
-            }
-            tapTimeoutRef.current = setTimeout(() => {
-                if (!isNoteOpen && !isChatOpen && !isBookmarkSelectorOpen && !showTranslation) {
-                    setIsTapped(false);
-                }
-            }, 3000);
+            dispatchPanelOpen({
+                tab: 'translation',
+                paragraphHash,
+                paragraphText,
+                translation: translation || null,
+                translationError: error || null,
+                isTranslating: false,
+                noteContent: noteContent || '',
+                bookId,
+                chatThreadId: `${bookId}|${paragraphHash}`,
+            });
         }
     };
 
@@ -314,32 +313,7 @@ const TranslatableParagraph = React.memo(function TranslatableParagraph({
             e.stopPropagation();
         }
         
-        // Mobile: open translation in bottom panel, trigger translation if needed
-        if (isMobile) {
-            // Set active paragraph so bottom panel knows which paragraph is active
-            dataStore.setActiveParagraphHash(paragraphHash);
-            
-            // Dispatch panel open event with current data
-            dispatchPanelOpen({
-                tab: 'translation',
-                paragraphHash,
-                paragraphText,
-                translation: translation || null,
-                translationError: error || null,
-                isTranslating: !translation, // Will start translating if no translation
-                noteContent: noteContent || '',
-                bookId,
-                chatThreadId: `${bookId}|${paragraphHash}`,
-            });
-            
-            // If translation doesn't exist, fetch it
-            if (!translation) {
-                // Trigger translation (continue with normal flow)
-            } else {
-                // Translation exists, panel opened - done
-                return;
-            }
-        } else {
+        if (!isMobile) {
             // Desktop: If we already have a translation, just toggle display
             if (translation) {
                 setShowTranslation(!showTranslation);
@@ -589,10 +563,11 @@ const TranslatableParagraph = React.memo(function TranslatableParagraph({
     // Check if this paragraph is the active one
     const isActiveParagraph = activeParagraphHash === paragraphHash;
     
-    // Mobile: show buttons on tap (or if active like bookmarks/notes) - only for active paragraph
-    // Bookmark button should always be visible if it has a bookmark
+    // Mobile: show right-side buttons only for the active paragraph,
+    // but keep bookmark visible on paragraphs that already have a bookmark.
+    // Desktop: show buttons on hover or if any related state is active.
     const showButtons = isMobile 
-        ? isActiveParagraph && (isTapped || hasBookmark || hasNote || hasChat || isNoteOpen || isChatOpen || isBookmarkSelectorOpen)
+        ? (isActiveParagraph || hasBookmark)
         : (isHovered || isButtonHovered || isNoteButtonHovered || isChatButtonHovered || isBookmarkButtonHovered || isNoteOpen || isChatOpen || isBookmarkSelectorOpen || hasBookmark);
     
     const handleBookmarkClick = (e: React.MouseEvent | React.TouchEvent) => {
@@ -708,16 +683,18 @@ const TranslatableParagraph = React.memo(function TranslatableParagraph({
             style={{ 
                 marginLeft: isMobile ? '0' : '-60px', 
                 marginRight: isMobile ? '0' : '-60px', 
-                paddingLeft: isMobile ? '48px' : '60px', 
-                paddingRight: isMobile ? '48px' : '60px',
+                paddingLeft: isMobile ? '4px' : '60px', 
+                paddingRight: isMobile ? '32px' : '60px',
                 backgroundColor: isActiveParagraph && isMobile && !zenMode 
                     ? 'rgba(251, 191, 36, 0.08)' // Less strong yellow tint
                     : 'transparent',
                 borderRadius: isActiveParagraph && isMobile && !zenMode ? '8px' : '0',
-                paddingTop: isActiveParagraph && isMobile && !zenMode ? '8px' : '0',
-                paddingBottom: isActiveParagraph && isMobile && !zenMode ? '8px' : '0',
-                borderLeft: isActiveParagraph && isMobile && !zenMode 
-                    ? '3px solid rgba(251, 191, 36, 0.3)' 
+                // Keep vertical padding constant so the paragraph doesn't "jump" when selected
+                paddingTop: '0',
+                paddingBottom: '0',
+                // Always reserve space for the left border so content doesn't shift horizontally
+                borderLeft: isMobile && !zenMode
+                    ? (isActiveParagraph ? '3px solid rgba(251, 191, 36, 0.3)' : '3px solid transparent')
                     : 'none',
                 maxWidth: '100%',
                 boxSizing: 'border-box',
@@ -727,7 +704,7 @@ const TranslatableParagraph = React.memo(function TranslatableParagraph({
             onMouseLeave={handleMouseLeave}
             onClick={handleParagraphClick}
         >
-            {/* Mobile: Translate button - left side */}
+            {/* Mobile: Hidden translate button for retry feature - not visible but accessible via querySelector */}
             {!zenMode && isMobile && (
                 <button
                     data-translate-button
@@ -737,142 +714,19 @@ const TranslatableParagraph = React.memo(function TranslatableParagraph({
                         handleTranslate(e);
                     }}
                     disabled={isLoading}
-                    className={`
-                        absolute left-2 top-1 z-30
-                        w-8 h-8 
-                        flex items-center justify-center 
-                        rounded-full 
-                        transition-all duration-300 ease-out
-                        ${showButtons ? 'opacity-100 translate-x-0' : 'opacity-0 -translate-x-2'}
-                        ${isLoading ? 'animate-pulse' : ''}
-                        focus:outline-none focus:ring-2 focus:ring-rose-200
-                    `}
-                    style={{
-                        transform: showButtons ? 'translateX(0)' : 'translateX(-8px)',
-                        boxShadow: showButtons ? '0 4px 12px rgba(0,0,0,0.08)' : 'none',
-                        backgroundColor: hasTranslation 
-                            ? 'var(--zen-translation-btn-active-bg, rgba(16, 185, 129, 0.15))' 
-                            : 'var(--zen-translation-btn-bg, rgba(255, 255, 255, 0.9))',
-                        borderWidth: hasTranslation ? '2px' : '1px',
-                        borderStyle: 'solid',
-                        borderColor: hasTranslation 
-                            ? 'var(--zen-translation-btn-active-border, rgba(16, 185, 129, 0.4))' 
-                            : 'var(--zen-translation-btn-border, rgba(0, 0, 0, 0.1))',
-                        color: hasTranslation 
-                            ? 'var(--zen-translation-btn-active-text, rgba(16, 185, 129, 0.8))' 
-                            : 'var(--zen-translation-btn-text, rgba(0, 0, 0, 0.5))',
-                    }}
-                    title={hasTranslation ? 'Show/hide translation' : 'Translate paragraph'}
-                >
-                    {isLoading ? (
-                        <span className="w-4 h-4 border-2 border-rose-300 border-t-transparent rounded-full animate-spin" />
-                    ) : (
-                        <svg 
-                            width="16" 
-                            height="16" 
-                            viewBox="0 0 24 24" 
-                            fill="none" 
-                            stroke="currentColor" 
-                            strokeWidth="2" 
-                            strokeLinecap="round" 
-                            strokeLinejoin="round"
-                        >
-                            <path d="M5 8l6 6" />
-                            <path d="M4 14l6-6 2-3" />
-                            <path d="M2 5h12" />
-                            <path d="M7 2h1" />
-                            <path d="M22 22l-5-10-5 10" />
-                            <path d="M14 18h6" />
-                        </svg>
-                    )}
-                </button>
+                    style={{ display: 'none' }}
+                    aria-hidden="true"
+                />
             )}
 
-            {/* Mobile: Right-side buttons (vertical stack) - hidden in zen mode */}
+            {/* Mobile: Right-side bookmark button only */}
             {!zenMode && isMobile && (
                 <div 
-                    className={`absolute right-2 top-1 z-30 flex flex-col gap-1.5 transition-all duration-300 ease-out ${
+                    className={`absolute right-1 top-0 z-30 flex flex-col gap-1.5 transition-all duration-300 ease-out ${
                         showButtons ? 'opacity-100 translate-x-0' : 'opacity-0 translate-x-2'
                     }`}
-                    style={{
-                        transform: showButtons ? 'translateX(0)' : 'translateX(8px)',
-                    }}
                 >
-                    {/* Note button - top */}
-                    <button
-                        onClick={(e) => {
-                            e.preventDefault();
-                            e.stopPropagation();
-                            handleNoteClick(e);
-                        }}
-                        className={`
-                            w-8 h-8 
-                            flex items-center justify-center 
-                            rounded-full 
-                            transition-all duration-300 ease-out
-                            focus:outline-none focus:ring-2
-                        `}
-                        style={{
-                            boxShadow: (showButtons || hasNote) ? '0 4px 12px rgba(0,0,0,0.08)' : 'none',
-                            backgroundColor: hasNote 
-                                ? 'var(--zen-note-btn-active-bg, rgba(245, 158, 11, 0.15))' 
-                                : 'var(--zen-note-btn-bg, rgba(255, 255, 255, 0.9))',
-                            borderWidth: hasNote ? '2px' : '1px',
-                            borderStyle: 'solid',
-                            borderColor: hasNote 
-                                ? 'var(--zen-note-btn-active-border, rgba(245, 158, 11, 0.4))' 
-                                : 'var(--zen-note-btn-border, rgba(0, 0, 0, 0.1))',
-                            color: hasNote 
-                                ? 'var(--zen-note-btn-active-text, rgba(245, 158, 11, 0.8))' 
-                                : 'var(--zen-note-btn-text, rgba(0, 0, 0, 0.5))',
-                        }}
-                        title={hasNote ? 'Edit note' : 'Add note'}
-                    >
-                        <svg 
-                            width="14" 
-                            height="14" 
-                            viewBox="0 0 24 24" 
-                            fill="none" 
-                            stroke="currentColor" 
-                            strokeWidth="2" 
-                            strokeLinecap="round" 
-                            strokeLinejoin="round"
-                        >
-                            <path d="M12 20h9" />
-                            <path d="M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4L16.5 3.5z" />
-                        </svg>
-                    </button>
-
-                    {/* Chat button - middle */}
-                    <button
-                        onClick={handleChatClick}
-                        className={`
-                            w-8 h-8 
-                            flex items-center justify-center 
-                            rounded-full 
-                            transition-all duration-300 ease-out
-                            focus:outline-none focus:ring-2
-                        `}
-                        style={{
-                            boxShadow: (showButtons || hasChat) ? '0 4px 12px rgba(0,0,0,0.08)' : 'none',
-                            backgroundColor: hasChat 
-                                ? 'var(--zen-note-btn-active-bg, rgba(139, 92, 246, 0.15))' 
-                                : 'var(--zen-note-btn-bg, rgba(255, 255, 255, 0.9))',
-                            borderWidth: hasChat ? '2px' : '1px',
-                            borderStyle: 'solid',
-                            borderColor: hasChat 
-                                ? 'var(--zen-note-btn-active-border, rgba(139, 92, 246, 0.4))' 
-                                : 'var(--zen-note-btn-border, rgba(0, 0, 0, 0.1))',
-                            color: hasChat 
-                                ? 'var(--zen-note-btn-active-text, rgba(139, 92, 246, 0.8))' 
-                                : 'var(--zen-note-btn-text, rgba(0, 0, 0, 0.5))',
-                        }}
-                        title={hasChat ? 'Open AI chat' : 'Start AI chat'}
-                    >
-                        <IoChatbubbleOutline size={14} />
-                    </button>
-
-                    {/* Bookmark button - bottom */}
+                    {/* Bookmark button (only visible button on mobile paragraphs) */}
                     <button
                         ref={bookmarkButtonRef}
                         onClick={(e) => {
@@ -885,11 +739,10 @@ const TranslatableParagraph = React.memo(function TranslatableParagraph({
                             flex items-center justify-center 
                             rounded-full 
                             transition-all duration-300 ease-out
-                            ${(showButtons || hasBookmark) ? 'opacity-100 translate-x-0' : 'opacity-0 translate-x-2'}
                             focus:outline-none focus:ring-2 focus:ring-rose-200
                         `}
                         style={{
-                            boxShadow: (showButtons || hasBookmark) ? '0 4px 12px rgba(0,0,0,0.08)' : 'none',
+                            boxShadow: hasBookmark ? '0 4px 12px rgba(0,0,0,0.08)' : 'none',
                             backgroundColor: hasBookmark && bookmarkGroupColor
                                 ? `${bookmarkGroupColor}20` // 20% opacity
                                 : 'var(--zen-btn-bg, rgba(255, 255, 255, 0.9))',

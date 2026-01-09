@@ -175,9 +175,17 @@ function TranslationContent({
           </div>
         </div>
       ) : (
-        <div className="flex-1 flex items-center justify-center">
-          <div className="text-sm" style={{ color: 'var(--zen-text-muted, #78716c)' }}>
-            Click translate button to see translation
+        <div className="flex-1 flex items-center justify-center text-center">
+          <div>
+            <div className="mb-3 text-sm" style={{ color: 'var(--zen-text-muted, #78716c)' }}>
+              No translation yet for this paragraph.
+            </div>
+            <button
+              onClick={() => dispatchTranslationRetry({ paragraphHash })}
+              className="px-4 py-2 bg-rose-500 hover:bg-rose-600 text-white text-sm font-medium rounded-lg transition-colors"
+            >
+              Translate
+            </button>
           </div>
         </div>
       )}
@@ -212,6 +220,7 @@ function MobileBottomPanel() {
   const [panelState, setPanelState] = useState<PanelState>('partial');
   const [currentHeight, setCurrentHeight] = useState<number>(0);
   const [content, setContent] = useState<PanelContent | null>(null);
+  const [keyboardHeight, setKeyboardHeight] = useState(0); // Track keyboard height
   
   const panelRef = useRef<HTMLDivElement>(null);
   const handleRef = useRef<HTMLDivElement>(null);
@@ -279,6 +288,29 @@ function MobileBottomPanel() {
       unsubOpen();
       unsubClose();
       unsubUpdate();
+    };
+  }, []);
+
+  // Handle keyboard appearance - move panel up when keyboard shows
+  useEffect(() => {
+    if (typeof window === 'undefined' || !window.visualViewport) return;
+
+    const viewport = window.visualViewport;
+    
+    const handleResize = () => {
+      // Calculate keyboard height as difference between window height and viewport height
+      const windowHeight = window.innerHeight;
+      const viewportHeight = viewport.height;
+      const newKeyboardHeight = Math.max(0, windowHeight - viewportHeight);
+      setKeyboardHeight(newKeyboardHeight);
+    };
+
+    viewport.addEventListener('resize', handleResize);
+    viewport.addEventListener('scroll', handleResize);
+    
+    return () => {
+      viewport.removeEventListener('resize', handleResize);
+      viewport.removeEventListener('scroll', handleResize);
     };
   }, []);
 
@@ -563,13 +595,14 @@ function MobileBottomPanel() {
       {/* Panel */}
       <div
         ref={panelRef}
-        className="fixed bottom-0 left-0 right-0 z-50 md:hidden"
+        className="fixed left-0 right-0 z-50 md:hidden"
         style={{
+          bottom: `${keyboardHeight}px`, // Move up when keyboard is shown
           height: `${currentHeight}px`,
-          maxHeight: '100vh',
+          maxHeight: `calc(100vh - ${keyboardHeight}px)`,
           transform: isOpen ? 'translateY(0)' : 'translateY(100%)',
-          transition: 'height 0.2s ease-out, transform 0.2s ease-out',
-          willChange: 'height',
+          transition: 'height 0.2s ease-out, transform 0.2s ease-out, bottom 0.15s ease-out',
+          willChange: 'height, bottom',
           userSelect: 'none', // Apply to panel only, not entire document
         }}
       >
@@ -682,7 +715,8 @@ function MobileBottomPanel() {
               </ScrollableContent>
             )}
             {activeTab === 'chat' && content.bookId && (
-              <ScrollableContent onScrollToBottom={handleClose}>
+              // Chat has its own scroll behavior - don't wrap in ScrollableContent
+              <div className="h-full overflow-hidden">
                 <ChatAssistant
                   bookId={content.bookId}
                   paragraphHash={content.paragraphHash}
@@ -707,7 +741,7 @@ function MobileBottomPanel() {
                     });
                   }}
                 />
-              </ScrollableContent>
+              </div>
             )}
           </div>
         </div>

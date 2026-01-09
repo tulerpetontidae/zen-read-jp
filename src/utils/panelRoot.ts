@@ -36,14 +36,28 @@ export function initializePanelRoot(PanelComponent: React.ComponentType): void {
  * Cleanup the panel root. Should be called when unmounting.
  */
 export function cleanupPanelRoot(): void {
-  if (panelRoot) {
-    panelRoot.unmount();
-    panelRoot = null;
-  }
-  if (containerElement && containerElement.parentNode) {
-    containerElement.parentNode.removeChild(containerElement);
-    containerElement = null;
-  }
+  if (!panelRoot && !containerElement) return;
+
+  // Defer unmounting to avoid doing it synchronously during another React render,
+  // which can trigger warnings in concurrent/StrictMode.
+  const rootToUnmount = panelRoot;
+  const containerToRemove = containerElement;
+  panelRoot = null;
+  containerElement = null;
+
+  // Use queueMicrotask if available, otherwise fallback to setTimeout(0)
+  const schedule = typeof queueMicrotask === 'function'
+    ? queueMicrotask
+    : (cb: () => void) => setTimeout(cb, 0);
+
+  schedule(() => {
+    if (rootToUnmount) {
+      rootToUnmount.unmount();
+    }
+    if (containerToRemove && containerToRemove.parentNode) {
+      containerToRemove.parentNode.removeChild(containerToRemove);
+    }
+  });
 }
 
 /**

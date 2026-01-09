@@ -106,6 +106,7 @@ function ReaderPageContent({ params }: { params: Promise<{ id: string }> }) {
     const isMobile = useIsMobile();
     const [bottomPanelOpen, setBottomPanelOpen] = useState(false);
     const [bottomPanelTab, setBottomPanelTab] = useState<BottomPanelTab>('translation');
+    const [headerOffset, setHeaderOffset] = useState(0); // 0..HEADER_HEIGHT, used to slide header & content together
     
     // Use context for active paragraph (set by TranslatableParagraph)
     const activeParagraphHash = useContextActiveParagraph();
@@ -422,8 +423,8 @@ function ReaderPageContent({ params }: { params: Promise<{ id: string }> }) {
                     fontSize: currentFontSize.size,
                     lineHeight: '1.9',
                     color: 'var(--zen-text, #1a1a1a)',
-                    padding: isMobile ? '10px 4px' : '10px 40px',
-                    textAlign: isMobile ? 'center' : 'left',
+                    padding: isMobile ? '8px 8px' : '10px 40px',
+                    textAlign: 'left', // Left align on both mobile and desktop
                     wordBreak: 'break-word',
                     overflowWrap: 'break-word',
                     transition: 'font-size 0.2s ease',
@@ -983,27 +984,70 @@ function ReaderPageContent({ params }: { params: Promise<{ id: string }> }) {
         dataStore.setActiveParagraphHash(null);
     }, [dataStore]);
 
+    // Mobile: smoothly slide header with scroll, similar to browser chrome,
+    // and allow it to reappear whenever user scrolls up (not only near top)
+    useEffect(() => {
+        if (!isMobile) return;
+        const scrollEl = containerRef.current;
+        if (!scrollEl) return;
+
+        const HEADER_HEIGHT = 56; // h-14 -> 14 * 4px
+        let ticking = false;
+        let lastScrollTop = scrollEl.scrollTop;
+        let currentOffset = 0;
+
+        const handleScroll = () => {
+            if (ticking) return;
+            ticking = true;
+            requestAnimationFrame(() => {
+                const scrollTop = scrollEl.scrollTop;
+                const delta = scrollTop - lastScrollTop;
+                lastScrollTop = scrollTop;
+
+                // Accumulate offset based on scroll direction, clamped between 0 and HEADER_HEIGHT.
+                // Scrolling down moves header up (towards HEADER_HEIGHT), scrolling up moves it back down (towards 0),
+                // regardless of absolute scroll position.
+                currentOffset = Math.max(0, Math.min(HEADER_HEIGHT, currentOffset + delta));
+                setHeaderOffset(currentOffset);
+                ticking = false;
+            });
+        };
+
+        scrollEl.addEventListener('scroll', handleScroll, { passive: true });
+        // Initialize position
+        handleScroll();
+        return () => {
+            scrollEl.removeEventListener('scroll', handleScroll);
+        };
+    }, [isMobile]);
+
     // Note: Bottom panel content (translation, note, chat) is now rendered by the
     // isolated MobileBottomPanel component in its own React root. No content useMemos needed here.
 
     return (
         <div className="fixed inset-0 flex flex-col overflow-hidden" style={{ backgroundColor: 'var(--zen-reader-bg, #FDFBF7)' }}>
-            {/* Header - always visible */}
-            <header className="h-14 flex items-center justify-between px-4 shrink-0 border-b relative z-10 transition-colors" style={{ borderColor: 'var(--zen-border, rgba(0,0,0,0.1))' }}>
+            {/* Header - mobile: slides with scroll (browser-chrome-like) */}
+            <header
+                className="h-14 flex items-center px-2 md:px-4 shrink-0 border-b relative z-10"
+                style={{ 
+                    borderColor: 'var(--zen-border, rgba(0,0,0,0.1))',
+                    transform: isMobile ? `translateY(-${headerOffset}px)` : 'translateY(0)',
+                }}
+            >
                 {/* Left side - back button and title (hidden in zen mode) */}
-                <div className={`flex items-center flex-1 transition-opacity duration-300 ${zenMode ? 'opacity-0 pointer-events-none' : 'opacity-100'}`}>
-                    <Link href="/" className="p-2 transition-colors" style={{ color: 'var(--zen-text-muted, #78716c)' }}>
+                <div className={`flex items-center min-w-0 flex-1 transition-opacity duration-300 ${zenMode ? 'opacity-0 pointer-events-none' : 'opacity-100'}`}>
+                    <Link href="/" className="p-2 shrink-0 transition-colors" style={{ color: 'var(--zen-text-muted, #78716c)' }}>
                         <FaChevronLeft size={16} />
                     </Link>
                     {bookTitle && (
-                        <h1 className="flex-1 text-center font-serif font-medium text-sm truncate px-4" style={{ color: 'var(--zen-heading, #1c1917)' }}>
+                        <h1 className="min-w-0 flex-1 font-serif font-medium text-sm truncate pr-2" style={{ color: 'var(--zen-heading, #1c1917)' }}>
                             {bookTitle}
                         </h1>
                     )}
                 </div>
 
-                {/* Right side - all buttons */}
-                <div className="flex items-center gap-2">
+                {/* Right side - all buttons (always visible, never shrink) */}
+                <div className="flex items-center gap-1 md:gap-2 shrink-0">
                     {/* Show all buttons - hidden on mobile */}
                     <div className="hidden md:flex items-center gap-2">
                         {/* Show all translations button (hidden in zen mode) */}
@@ -1093,7 +1137,11 @@ function ReaderPageContent({ params }: { params: Promise<{ id: string }> }) {
                     </button>
                     {/* Settings button - always visible */}
                     <button
-                        onClick={() => setIsSettingsOpen(true)}
+                        onClick={() => {
+                            // Close mobile bottom panel so settings cleanly overlays
+                            dispatchPanelClose();
+                            setIsSettingsOpen(true);
+                        }}
                         className="p-2 transition-colors rounded-full"
                         style={{ 
                             color: 'var(--zen-text-muted, #78716c)',
@@ -1112,6 +1160,8 @@ function ReaderPageContent({ params }: { params: Promise<{ id: string }> }) {
                 style={{
                     scrollbarWidth: 'thin',
                     scrollbarColor: 'var(--zen-progress-bg, #e7e5e4) transparent',
+                    // Move content up as header slides away so there is no empty gap
+                    marginTop: isMobile ? `-${headerOffset}px` : '0px',
                 }}
             >
                 {/* Scrollbar indicators for bookmarks - static markers on scrollbar track (hidden in zen mode, shown on scroll if toggle is ON) */}
