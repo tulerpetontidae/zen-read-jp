@@ -120,59 +120,75 @@ export async function translateWithOpenAI(
 // Map of language pair keys to translator instances
 const bergamotTranslators = new Map<string, any>();
 
-// Cache for available language pairs (only cache successful fetches)
+// Cache for available language pairs
 let availableLanguagePairsCache: Map<string, string[]> | null = null;
+// Pending fetch promise to deduplicate simultaneous requests
+let pendingFetch: Promise<Map<string, string[]>> | null = null;
 
 /**
- * Clear the language pairs cache (useful for retrying after errors)
+ * Clear the cache for available language pairs
+ * Useful for retrying after a failed fetch
  */
 export function clearBergamotLanguagePairsCache(): void {
   availableLanguagePairsCache = null;
+  pendingFetch = null;
 }
 
 /**
  * Fetch available language pairs from the Mozilla registry
+ * Only works in browser environment (client-side)
+ * Uses request deduplication to prevent multiple simultaneous fetches
  */
 export async function getAvailableBergamotLanguagePairs(): Promise<Map<string, string[]>> {
-  // Only run in browser environment
+  // Browser environment check - prevent SSR execution
   if (typeof window === 'undefined') {
-    console.warn('getAvailableBergamotLanguagePairs called outside browser - returning empty map');
     return new Map();
   }
 
-  // Only use cache in browser environment
+  // Return cached result if available
   if (availableLanguagePairsCache) {
     return availableLanguagePairsCache;
   }
 
-  // Retry logic: try up to 3 times
-  let lastError: Error | null = null;
-  for (let attempt = 1; attempt <= 3; attempt++) {
+  // If there's already a pending fetch, return that promise instead of starting a new one
+  if (pendingFetch) {
     try {
-      const response = await fetch('https://storage.googleapis.com/moz-fx-translations-data--303e-prod-translations-data/db/models.json', {
-        credentials: 'omit',
+      return await pendingFetch;
+    } catch {
+      // If pending fetch fails, clear it and allow retry
+      pendingFetch = null;
+    }
+  }
+
+  const registryUrl = 'https://storage.googleapis.com/moz-fx-translations-data--303e-prod-translations-data/db/models.json';
+
+  // Create the fetch promise with simple timeout protection
+  pendingFetch = Promise.race([
+    (async () => {
+      const response = await fetch(registryUrl, {
+        method: 'GET',
+        headers: {
+          'Accept': 'application/json',
+        },
         mode: 'cors',
-        cache: 'no-cache', // Always fetch fresh data
+        credentials: 'omit',
       });
-      
+
       if (!response.ok) {
-        throw new Error(`HTTP error! status: ${response.status}`);
+        throw new Error(`Registry fetch failed: ${response.status} ${response.statusText}`);
       }
-      
+
       const data = await response.json();
       
-      if (!data || !data.models) {
-        console.warn('Bergamot registry response missing models data:', data);
-        throw new Error('Invalid registry format: missing models');
+      if (!data || typeof data !== 'object' || !data.models) {
+        throw new Error('Invalid registry format: missing "models" property');
       }
       
       const pairs = new Map<string, string[]>();
       
-      // Parse the registry format: { "models": { "ja-en": [...], "en-ja": [...] } }
       for (const [pairKey, models] of Object.entries(data.models || {})) {
         const [source, target] = pairKey.split('-');
         if (source && target && Array.isArray(models) && models.length > 0) {
-          // Store both directions if available
           if (!pairs.has(source)) {
             pairs.set(source, []);
           }
@@ -180,36 +196,27 @@ export async function getAvailableBergamotLanguagePairs(): Promise<Map<string, s
         }
       }
       
-      if (pairs.size === 0) {
-        console.warn('No language pairs found in Bergamot registry');
-        // Don't cache empty results - allow retry
-        return new Map();
+      if (pairs.size > 0) {
+        availableLanguagePairsCache = pairs;
       }
       
-      console.log(`Loaded ${pairs.size} source languages from Bergamot registry`);
-      
-      // Cache successful results
-      availableLanguagePairsCache = pairs;
       return pairs;
-    } catch (error) {
-      lastError = error instanceof Error ? error : new Error(String(error));
-      console.error(`Failed to fetch Bergamot language pairs (attempt ${attempt}/3):`, lastError.message);
-      
-      // Wait before retry (exponential backoff)
-      if (attempt < 3) {
-        await new Promise(resolve => setTimeout(resolve, 1000 * attempt));
-      }
+    })(),
+    // Timeout after 3 seconds (shorter for UI responsiveness)
+    new Promise<Map<string, string[]>>((_, reject) => {
+      setTimeout(() => reject(new Error('Timeout')), 3000);
+    }),
+  ]).catch((error) => {
+    if (error instanceof Error && error.message !== 'Timeout') {
+      console.error('Failed to fetch Bergamot language pairs:', error.message);
     }
-  }
-  
-  // All retries failed
-  console.error('Failed to fetch Bergamot language pairs after 3 attempts:', lastError);
-  if (lastError instanceof Error && process.env.NODE_ENV === 'development') {
-    console.error('Error stack:', lastError.stack);
-  }
-  
-  // Don't cache errors - allow retry on next call
-  return new Map();
+    return new Map();
+  }).finally(() => {
+    // Always clear pending fetch after completion
+    pendingFetch = null;
+  });
+
+  return pendingFetch;
 }
 
 /**
@@ -239,11 +246,6 @@ export interface TranslationPairInfo {
  */
 export async function getTranslationPairInfo(source: string, target: string): Promise<TranslationPairInfo> {
   const pairs = await getAvailableBergamotLanguagePairs();
-  
-  // Log if pairs are empty (registry fetch likely failed)
-  if (pairs.size === 0) {
-    console.warn('Bergamot registry is empty - registry fetch may have failed. Check network tab for errors.');
-  }
   
   // Same language - no translation needed
   if (source === target) {
@@ -294,11 +296,6 @@ export async function getTranslationPairInfo(source: string, target: string): Pr
   }
   
   // No translation path available
-  if (pairs.size === 0) {
-    // If registry is empty, this is likely a fetch error
-    console.warn(`Translation pair ${source}→${target} appears unavailable, but registry may not have loaded.`);
-  }
-  
   return {
     available: false,
     isDirect: false,
@@ -386,6 +383,7 @@ async function getBergamotTranslator(
     // We extend TranslatorBacking to inherit all model loading functionality
     class CustomBacking extends TranslatorBacking {
       private baseUrl: string = '';
+      private registryCache: any[] | null = null;
 
       constructor(options: any) {
         // Use the new Mozilla registry URL and ensure pivot through English is enabled
@@ -395,76 +393,114 @@ async function getBergamotTranslator(
           pivotLanguage: options.pivotLanguage ?? 'en', // Enable pivot translation through English
         };
         // Call parent constructor to initialize registry, buffers, etc.
+        // Note: parent constructor might try to load registry, but our override will handle it
         super(mergedOptions);
       }
 
       // Override loadModelRegistery to parse the new registry format
       async loadModelRegistery(): Promise<any[]> {
-        const response = await fetch(this.registryUrl, { credentials: 'omit' });
-        const data = await response.json();
-        
-        // Store baseUrl for model file loading
-        this.baseUrl = data.baseUrl || 'https://storage.googleapis.com/moz-fx-translations-data--303e-prod-translations-data';
-        
-        // Parse the new format: { "models": { "ja-en": [{ files: {...} }] } }
-        const registry: any[] = [];
-        
-        for (const [pairKey, models] of Object.entries(data.models || {})) {
-          if (!Array.isArray(models) || models.length === 0) continue;
-          
-          // Get the first model (prefer Release status, otherwise first available)
-          // releaseStatus can be "Release", "Release Desktop", "Nightly", etc.
-          let model = models.find((m: any) => m.releaseStatus?.includes('Release')) || models[0];
-          
-          if (!model.files) continue;
-          
-          const [from, to] = pairKey.split('-');
-          if (!from || !to) continue;
-          
-          // Convert to the format expected by TranslatorBacking
-          const files: any = {
-            model: {
-              name: `${this.baseUrl}/${model.files.model.path}`,
-              expectedSha256Hash: model.files.model.uncompressedHash,
-            },
-          };
-          
-          // Handle vocab - can be single vocab or separate srcVocab/trgVocab
-          if (model.files.vocab) {
-            files.vocab = {
-              name: `${this.baseUrl}/${model.files.vocab.path}`,
-            };
-          } else if (model.files.srcVocab && model.files.trgVocab) {
-            files.srcvocab = {
-              name: `${this.baseUrl}/${model.files.srcVocab.path}`,
-            };
-            files.trgvocab = {
-              name: `${this.baseUrl}/${model.files.trgVocab.path}`,
-            };
-          }
-          
-          // Handle lexical shortlist (called 'lex' in parent class)
-          if (model.files.lexicalShortlist) {
-            files.lex = {
-              name: `${this.baseUrl}/${model.files.lexicalShortlist.path}`,
-            };
-          }
-          
-          registry.push({
-            from,
-            to,
-            files
-          });
+        // Return cached registry if available
+        if (this.registryCache) {
+          console.log('[Bergamot] Returning cached registry');
+          return this.registryCache;
         }
+
+        console.log('[Bergamot] Loading model registry from:', this.registryUrl);
         
-        return registry;
+        try {
+          // Simple fetch - let browser handle caching and timeouts naturally
+          const response = await fetch(this.registryUrl, { 
+            credentials: 'omit',
+            mode: 'cors',
+          });
+
+          console.log('[Bergamot] Registry fetch response status:', response.status);
+
+          if (!response.ok) {
+            throw new Error(`Registry fetch failed: ${response.status} ${response.statusText}`);
+          }
+
+          const data = await response.json();
+          console.log('[Bergamot] Registry loaded, parsing models...');
+          
+          // Store baseUrl for model file loading
+          this.baseUrl = data.baseUrl || 'https://storage.googleapis.com/moz-fx-translations-data--303e-prod-translations-data';
+          
+          // Parse the new format: { "models": { "ja-en": [{ files: {...} }] } }
+          const registry: any[] = [];
+          
+          if (!data || typeof data !== 'object' || !data.models) {
+            throw new Error('Invalid registry format: missing "models" property');
+          }
+          
+          for (const [pairKey, models] of Object.entries(data.models || {})) {
+            if (!Array.isArray(models) || models.length === 0) continue;
+            
+            // Get the first model (prefer Release status, otherwise first available)
+            // releaseStatus can be "Release", "Release Desktop", "Nightly", etc.
+            let model = models.find((m: any) => m.releaseStatus?.includes('Release')) || models[0];
+            
+            if (!model?.files) continue;
+            
+            const [from, to] = pairKey.split('-');
+            if (!from || !to) continue;
+            
+            // Convert to the format expected by TranslatorBacking
+            const files: any = {
+              model: {
+                name: `${this.baseUrl}/${model.files.model.path}`,
+                expectedSha256Hash: model.files.model.uncompressedHash,
+              },
+            };
+            
+            // Handle vocab - can be single vocab or separate srcVocab/trgVocab
+            if (model.files.vocab) {
+              files.vocab = {
+                name: `${this.baseUrl}/${model.files.vocab.path}`,
+              };
+            } else if (model.files.srcVocab && model.files.trgVocab) {
+              files.srcvocab = {
+                name: `${this.baseUrl}/${model.files.srcVocab.path}`,
+              };
+              files.trgvocab = {
+                name: `${this.baseUrl}/${model.files.trgVocab.path}`,
+              };
+            }
+            
+            // Handle lexical shortlist (called 'lex' in parent class)
+            if (model.files.lexicalShortlist) {
+              files.lex = {
+                name: `${this.baseUrl}/${model.files.lexicalShortlist.path}`,
+              };
+            }
+            
+            registry.push({
+              from,
+              to,
+              files
+            });
+          }
+          
+          console.log(`[Bergamot] Registry parsed, found ${registry.length} language pairs`);
+          // Cache the registry to avoid refetching
+          this.registryCache = registry;
+          return registry;
+        } catch (error) {
+          console.error('[Bergamot] Error loading model registry:', error);
+          throw error;
+        }
       }
 
       // Override fetch to handle CORS, gzip decompression, and integrity checks for Google Cloud Storage
       async fetch(url: string, checksum?: string, extra?: any): Promise<ArrayBuffer> {
+        console.log(`[Bergamot] Starting fetch for: ${url}`);
+        
         // Rig up a timeout cancel signal for our fetch
         const controller = new AbortController();
-        const abort = () => controller.abort();
+        const abort = () => {
+          console.log(`[Bergamot] Aborting fetch for: ${url}`);
+          controller.abort();
+        };
 
         const downloadTimeout = (this as any).downloadTimeout || 120000; // 2 minutes for large files
         const timeout = downloadTimeout ? setTimeout(abort, downloadTimeout) : null;
@@ -484,29 +520,40 @@ async function getBergamotTranslator(
           };
 
           try {
-            console.log(`Fetching Bergamot model file: ${url}`);
+            console.log(`[Bergamot] Fetching model file: ${url}`);
+            const fetchStart = Date.now();
             const response = await fetch(url, options);
+            const fetchTime = Date.now() - fetchStart;
+            
+            console.log(`[Bergamot] Fetch response received in ${fetchTime}ms: ${response.status} for ${url}`);
             
             if (!response.ok) {
               throw new Error(`HTTP ${response.status}: ${response.statusText} for ${url}`);
             }
 
             // Get the raw data
+            console.log(`[Bergamot] Reading response body for: ${url}`);
             let arrayBuffer = await response.arrayBuffer();
-            console.log(`Downloaded ${url}, compressed size: ${arrayBuffer.byteLength} bytes`);
+            console.log(`[Bergamot] Downloaded ${url}, compressed size: ${arrayBuffer.byteLength} bytes`);
             
             // Check if the file is gzipped (by URL or by checking magic bytes)
             const isGzipped = url.endsWith('.gz') || this.isGzipData(arrayBuffer);
             
             if (isGzipped) {
-              console.log(`Decompressing gzipped file: ${url}`);
+              console.log(`[Bergamot] Decompressing gzipped file: ${url}`);
+              const decompressStart = Date.now();
               arrayBuffer = await this.decompressGzip(arrayBuffer);
-              console.log(`Decompressed size: ${arrayBuffer.byteLength} bytes`);
+              const decompressTime = Date.now() - decompressStart;
+              console.log(`[Bergamot] Decompressed in ${decompressTime}ms, size: ${arrayBuffer.byteLength} bytes`);
             }
             
+            console.log(`[Bergamot] Successfully fetched and processed: ${url}`);
             return arrayBuffer;
           } catch (fetchError: any) {
-            console.error(`Failed to fetch ${url}:`, fetchError);
+            console.error(`[Bergamot] Failed to fetch ${url}:`, fetchError);
+            if (fetchError.name === 'AbortError') {
+              throw new Error(`Fetch timeout after ${downloadTimeout / 1000} seconds for ${url}`);
+            }
             if (fetchError.message?.includes('CORS') || fetchError.message?.includes('Failed to fetch')) {
               throw new Error(`CORS or network error fetching ${url}. The file may not be accessible from this origin.`);
             }
@@ -640,9 +687,17 @@ async function getBergamotTranslator(
 
         // Initialize the worker with options (same as parent class)
         try {
-          await call('initialize', (this as any).options);
+          console.log('[Bergamot] Initializing worker...');
+          // Add timeout to worker initialization to prevent hanging
+          const initPromise = call('initialize', (this as any).options);
+          const timeoutPromise = new Promise((_, reject) => {
+            setTimeout(() => reject(new Error('Worker initialization timeout after 30 seconds')), 30000);
+          });
+          
+          await Promise.race([initPromise, timeoutPromise]);
+          console.log('[Bergamot] Worker initialized successfully');
         } catch (initError: any) {
-          console.error('Worker initialization failed:', initError);
+          console.error('[Bergamot] Worker initialization failed:', initError);
           // If initialization fails, the WASM might not have loaded
           // This could be due to CORS, missing files, or WASM loading issues
           throw new Error(`Failed to initialize Bergamot worker: ${initError.message || 'Unknown error'}. Make sure the worker files (translator-worker.js, bergamot-translator-worker.wasm) are accessible at /bergamot-worker/.`);
