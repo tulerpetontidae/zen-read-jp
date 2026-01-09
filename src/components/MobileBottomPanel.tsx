@@ -1,6 +1,23 @@
 'use client';
 
 import React, { useState, useRef, useEffect, useCallback } from 'react';
+import ChatAssistant from './ChatAssistant';
+import {
+  type BottomPanelTab,
+  type PanelOpenPayload,
+  type PanelContentUpdatePayload,
+  subscribeToPanelOpen,
+  subscribeToPanelClose,
+  subscribeToPanelContentUpdate,
+  dispatchNoteSave,
+  dispatchTranslationRetry,
+  dispatchPanelClose,
+  dispatchChatCreated,
+  dispatchChatDeleted,
+} from '@/utils/panelEventBridge';
+
+// Re-export BottomPanelTab for external use
+export type { BottomPanelTab };
 
 // Component to handle scroll detection and close on bottom scroll
 function ScrollableContent({ 
@@ -22,14 +39,12 @@ function ScrollableContent({
         clearTimeout(scrollTimeoutRef.current);
       }
 
-      // Debounce scroll handler
       scrollTimeoutRef.current = setTimeout(() => {
         if (!content) return;
         
         const { scrollTop, scrollHeight, clientHeight } = content;
         const distanceFromBottom = scrollHeight - scrollTop - clientHeight;
         
-        // If scrolled to bottom (within 10px threshold), close the panel
         if (distanceFromBottom <= 10 && scrollHeight > clientHeight) {
           onScrollToBottom();
         }
@@ -53,58 +68,225 @@ function ScrollableContent({
   );
 }
 
-export type BottomPanelTab = 'note' | 'chat' | 'translation';
+// Note editor with local state management
+function NoteEditor({ 
+  initialContent, 
+  paragraphHash,
+}: { 
+  initialContent: string;
+  paragraphHash: string;
+}) {
+  const [localContent, setLocalContent] = useState(initialContent);
+  const saveTimeoutRef = useRef<NodeJS.Timeout | null>(null);
+  const isUserTypingRef = useRef(false);
+  const lastSavedContentRef = useRef(initialContent);
 
-interface MobileBottomPanelProps {
-  isOpen: boolean;
-  initialTab?: BottomPanelTab;  // Only used when opening, not controlled
-  onClose: () => void;
-  translationContent?: React.ReactNode;
-  noteContent?: React.ReactNode;
-  chatContent?: React.ReactNode;
+  // Update when initialContent changes externally
+  useEffect(() => {
+    if (!isUserTypingRef.current && initialContent !== lastSavedContentRef.current) {
+      setLocalContent(initialContent);
+      lastSavedContentRef.current = initialContent;
+    }
+  }, [initialContent]);
+
+  const handleChange = (e: React.ChangeEvent<HTMLTextAreaElement>) => {
+    const newContent = e.target.value;
+    isUserTypingRef.current = true;
+    setLocalContent(newContent);
+    
+    if (saveTimeoutRef.current) {
+      clearTimeout(saveTimeoutRef.current);
+    }
+    saveTimeoutRef.current = setTimeout(() => {
+      isUserTypingRef.current = false;
+      lastSavedContentRef.current = newContent;
+      // Dispatch event to main app to save
+      dispatchNoteSave({ paragraphHash, content: newContent });
+    }, 500);
+  };
+
+  useEffect(() => {
+    return () => {
+      if (saveTimeoutRef.current) {
+        clearTimeout(saveTimeoutRef.current);
+      }
+    };
+  }, []);
+
+  return (
+    <div className="flex flex-col h-full p-4">
+      <textarea
+        value={localContent}
+        onChange={handleChange}
+        className="flex-1 w-full resize-none rounded-lg p-3 text-sm focus:outline-none focus:ring-2"
+        style={{
+          backgroundColor: 'var(--zen-note-content-bg, #fffbeb)',
+          color: 'var(--zen-text, #1a1a1a)',
+          borderWidth: '1px',
+          borderStyle: 'solid',
+          borderColor: 'var(--zen-note-border, #fde68a)',
+        }}
+        placeholder="Add your notes here..."
+      />
+    </div>
+  );
+}
+
+// Translation content display
+function TranslationContent({
+  translation,
+  translationError,
+  isTranslating,
+  paragraphHash,
+}: {
+  translation: string | null;
+  translationError: string | null;
+  isTranslating: boolean;
+  paragraphHash: string;
+}) {
+  return (
+    <div className="h-full flex flex-col p-4">
+      {translationError ? (
+        <div className="flex-1 flex items-center justify-center text-center p-4">
+          <div className="w-full">
+            <div className="p-4 bg-red-50 border border-red-200 rounded-lg text-red-600 text-sm">
+              {translationError}
+            </div>
+            <button
+              onClick={() => dispatchTranslationRetry({ paragraphHash })}
+              className="mt-4 w-full px-4 py-2 bg-rose-500 hover:bg-rose-600 text-white text-sm font-medium rounded-lg transition-colors"
+            >
+              Retry Translation
+            </button>
+          </div>
+        </div>
+      ) : translation ? (
+        <div
+          className="flex-1 text-sm leading-relaxed"
+          style={{ color: 'var(--zen-text, #1a1a1a)' }}
+        >
+          {translation}
+        </div>
+      ) : isTranslating ? (
+        <div className="flex-1 flex items-center justify-center">
+          <div className="flex items-center gap-2 text-sm" style={{ color: 'var(--zen-text-muted, #78716c)' }}>
+            <div className="animate-spin w-4 h-4 border-2 border-current border-t-transparent rounded-full" />
+            Translating...
+          </div>
+        </div>
+      ) : (
+        <div className="flex-1 flex items-center justify-center">
+          <div className="text-sm" style={{ color: 'var(--zen-text-muted, #78716c)' }}>
+            Click translate button to see translation
+          </div>
+        </div>
+      )}
+    </div>
+  );
 }
 
 type PanelState = 'collapsed' | 'partial' | 'full';
 
+// Content state managed by the panel itself
+interface PanelContent {
+  paragraphHash: string;
+  paragraphText: string;
+  // Translation
+  translation: string | null;
+  translationError: string | null;
+  isTranslating: boolean;
+  // Note
+  noteContent: string;
+  // Chat
+  bookId: string;
+  chatThreadId: string;
+}
+
 /**
- * Draggable bottom panel for mobile devices
- * States: collapsed (minimal), partial (33% viewport), full (100% with blur)
+ * Self-contained draggable bottom panel for mobile devices.
+ * Completely isolated from main React tree - communicates via CustomEvents.
  */
-function MobileBottomPanel({
-  isOpen,
-  initialTab = 'translation',
-  onClose,
-  translationContent,
-  noteContent,
-  chatContent,
-}: MobileBottomPanelProps) {
-  // CRITICAL: Tab state is managed INTERNALLY to avoid parent re-renders
-  // This makes tab switching instant regardless of book size
-  const [activeTab, setActiveTab] = useState<BottomPanelTab>(initialTab);
+function MobileBottomPanel() {
+  const [isOpen, setIsOpen] = useState(false);
+  const [activeTab, setActiveTab] = useState<BottomPanelTab>('translation');
   const [panelState, setPanelState] = useState<PanelState>('partial');
-  const [dragStartY, setDragStartY] = useState<number | null>(null);
-  const [dragStartHeight, setDragStartHeight] = useState<number>(0);
   const [currentHeight, setCurrentHeight] = useState<number>(0);
-  const [isDragging, setIsDragging] = useState(false);
+  const [content, setContent] = useState<PanelContent | null>(null);
+  
   const panelRef = useRef<HTMLDivElement>(null);
   const handleRef = useRef<HTMLDivElement>(null);
   const isDraggingRef = useRef(false);
+  const dragStartYRef = useRef<number>(0);
+  const dragStartHeightRef = useRef<number>(0);
   const wasOpenRef = useRef(false);
   const rafRef = useRef<number | null>(null);
   const lastHeightRef = useRef<number>(0);
   const debounceTimeoutRef = useRef<NodeJS.Timeout | null>(null);
+  
+  const handleDragStartRef = useRef<(clientY: number) => void>(() => {});
+  const handleDragMoveRef = useRef<(clientY: number) => void>(() => {});
+  const handleDragEndRef = useRef<() => void>(() => {});
 
   const viewportHeight = typeof window !== 'undefined' ? window.innerHeight : 800;
-  const partialHeight = viewportHeight * 0.33; // 33% of viewport
-  const collapsedHeight = 48; // Handle height only
+  const partialHeight = viewportHeight * 0.33;
+  const collapsedHeight = 48;
   const fullHeight = viewportHeight;
 
-  // Sync tab with initialTab when panel opens (allows parent to control initial tab)
+  // Subscribe to events from main app
   useEffect(() => {
-    if (isOpen) {
-      setActiveTab(initialTab);
-    }
-  }, [isOpen, initialTab]);
+    const unsubOpen = subscribeToPanelOpen((payload: PanelOpenPayload) => {
+      setContent({
+        paragraphHash: payload.paragraphHash,
+        paragraphText: payload.paragraphText,
+        translation: payload.translation || null,
+        translationError: payload.translationError || null,
+        isTranslating: payload.isTranslating || false,
+        noteContent: payload.noteContent || '',
+        bookId: payload.bookId || '',
+        chatThreadId: payload.chatThreadId || `${payload.bookId}|${payload.paragraphHash}`,
+      });
+      setActiveTab(payload.tab);
+      setIsOpen(true);
+    });
+
+    const unsubClose = subscribeToPanelClose(() => {
+      setIsOpen(false);
+    });
+
+    const unsubUpdate = subscribeToPanelContentUpdate((payload: PanelContentUpdatePayload) => {
+      setContent(prev => {
+        if (!prev || prev.paragraphHash !== payload.paragraphHash) return prev;
+        
+        if (payload.type === 'translation') {
+          return {
+            ...prev,
+            translation: payload.translation ?? prev.translation,
+            translationError: payload.translationError ?? prev.translationError,
+            isTranslating: payload.isTranslating ?? prev.isTranslating,
+          };
+        }
+        if (payload.type === 'note') {
+          return {
+            ...prev,
+            noteContent: payload.noteContent ?? prev.noteContent,
+          };
+        }
+        return prev;
+      });
+    });
+
+    return () => {
+      unsubOpen();
+      unsubClose();
+      unsubUpdate();
+    };
+  }, []);
+
+  // Handle close
+  const handleClose = useCallback(() => {
+    setIsOpen(false);
+    dispatchPanelClose();
+  }, []);
 
   // Initialize height based on panel state
   useEffect(() => {
@@ -112,7 +294,6 @@ function MobileBottomPanel({
       setCurrentHeight(0);
       setPanelState('collapsed');
       wasOpenRef.current = false;
-      // Cleanup on close
       if (rafRef.current !== null) {
         cancelAnimationFrame(rafRef.current);
         rafRef.current = null;
@@ -124,7 +305,6 @@ function MobileBottomPanel({
       return;
     }
 
-    // When opening for the first time, always start at partial height
     if (!wasOpenRef.current) {
       wasOpenRef.current = true;
       setPanelState('partial');
@@ -132,7 +312,6 @@ function MobileBottomPanel({
       return;
     }
 
-    // Otherwise, respect the current panel state
     switch (panelState) {
       case 'collapsed':
         setCurrentHeight(collapsedHeight);
@@ -158,17 +337,19 @@ function MobileBottomPanel({
     };
   }, []);
 
-  // Determine panel state based on height (for UI purposes like backdrop)
-  // Debounced to avoid excessive state updates during drag
+  // Keep lastHeightRef in sync
+  useEffect(() => {
+    lastHeightRef.current = currentHeight;
+  }, [currentHeight]);
+
+  // Debounced panel state update
   const updatePanelState = useCallback((height: number) => {
-    // Clear existing timeout
     if (debounceTimeoutRef.current) {
       clearTimeout(debounceTimeoutRef.current);
     }
 
-    // Debounce state update (only affects backdrop visibility, not critical)
     debounceTimeoutRef.current = setTimeout(() => {
-      const threshold1 = collapsedHeight + 50; // Small buffer for collapsed
+      const threshold1 = collapsedHeight + 50;
       const threshold2 = (partialHeight + fullHeight) / 2;
 
       if (height < threshold1) {
@@ -181,118 +362,114 @@ function MobileBottomPanel({
     }, 100);
   }, [collapsedHeight, partialHeight, fullHeight]);
 
-  // Handle drag start (touch or mouse)
+  // Handle drag start - NO document.body manipulation!
   const handleDragStart = useCallback((clientY: number) => {
     if (!panelRef.current) return;
     
-    // Cancel any pending RAF
     if (rafRef.current !== null) {
       cancelAnimationFrame(rafRef.current);
       rafRef.current = null;
     }
     
     isDraggingRef.current = true;
-    setIsDragging(true);
-    setDragStartY(clientY);
-    setDragStartHeight(panelRef.current.offsetHeight);
-    lastHeightRef.current = panelRef.current.offsetHeight;
-    document.body.style.userSelect = 'none'; // Prevent text selection during drag
-  }, []);
+    dragStartYRef.current = clientY;
+    dragStartHeightRef.current = lastHeightRef.current || partialHeight;
+    
+    // Only affect panel element, not entire document
+    panelRef.current.style.transition = 'none';
+  }, [partialHeight]);
 
-  // Handle drag move with RAF throttling and direct DOM manipulation
+  handleDragStartRef.current = handleDragStart;
+
+  // Handle drag move
   const handleDragMove = useCallback((clientY: number) => {
-    if (!isDraggingRef.current || dragStartY === null || !panelRef.current) return;
+    if (!isDraggingRef.current || !panelRef.current) return;
 
-    const deltaY = dragStartY - clientY; // Negative when dragging up
-    const newHeight = Math.max(collapsedHeight, Math.min(fullHeight, dragStartHeight + deltaY));
+    const deltaY = dragStartYRef.current - clientY;
+    const newHeight = Math.max(collapsedHeight, Math.min(fullHeight, dragStartHeightRef.current + deltaY));
     
-    // Apply height directly to DOM for immediate visual feedback (no React re-render)
-    if (panelRef.current) {
-      panelRef.current.style.height = `${newHeight}px`;
-    }
-    
-    // Store height for later sync (only update React state on drag end, not during drag)
+    panelRef.current.style.height = `${newHeight}px`;
     lastHeightRef.current = newHeight;
-    
-    // Only update panel state for backdrop visibility (debounced, doesn't cause re-render of content)
-    // Don't update currentHeight during drag to avoid React re-renders
-    updatePanelState(newHeight);
-  }, [dragStartY, dragStartHeight, collapsedHeight, fullHeight, updatePanelState]);
+  }, [collapsedHeight, fullHeight]);
+
+  handleDragMoveRef.current = handleDragMove;
 
   // Handle drag end
   const handleDragEnd = useCallback(() => {
     if (!isDraggingRef.current) return;
     
-    // Cancel any pending RAF
     if (rafRef.current !== null) {
       cancelAnimationFrame(rafRef.current);
       rafRef.current = null;
     }
     
     isDraggingRef.current = false;
-    setIsDragging(false);
     
-    // Use the last height from ref (more accurate than state during drag)
+    if (panelRef.current) {
+      panelRef.current.style.transition = 'height 0.2s ease-out';
+    }
+    
     const finalHeight = lastHeightRef.current;
-    setDragStartY(null);
-    document.body.style.userSelect = '';
 
-    // Sync React state with final height
-    setCurrentHeight(finalHeight);
-
-    // Close if below one line of text height (< 150px)
     if (finalHeight < 150) {
-      // Close if dragged below 150px (one line of text)
-      onClose();
+      if (panelRef.current) {
+        panelRef.current.style.height = '0px';
+      }
+      requestAnimationFrame(() => {
+        handleClose();
+      });
       return;
     }
     
-    // If > 2/3 of viewport, snap to full screen
     const twoThirdsHeight = viewportHeight * (2/3);
     if (finalHeight > twoThirdsHeight) {
-      setCurrentHeight(fullHeight);
-      setPanelState('full');
+      if (panelRef.current) {
+        panelRef.current.style.height = `${fullHeight}px`;
+      }
+      requestAnimationFrame(() => {
+        setCurrentHeight(fullHeight);
+        setPanelState('full');
+      });
       return;
     }
     
-    // Keep the current height (allow arbitrary sizes below 2/3)
-    // Only update state for UI purposes (backdrop, etc.)
-    updatePanelState(finalHeight);
-  }, [viewportHeight, fullHeight, onClose, updatePanelState]);
+    requestAnimationFrame(() => {
+      setCurrentHeight(finalHeight);
+      updatePanelState(finalHeight);
+    });
+  }, [viewportHeight, fullHeight, handleClose, updatePanelState]);
 
-  // Touch event handlers - use native event listeners to avoid passive event issues
+  handleDragEndRef.current = handleDragEnd;
+
+  // Touch event handlers
   useEffect(() => {
     const handle = handleRef.current;
     if (!handle) return;
 
     const touchStart = (e: TouchEvent) => {
-      // Only start drag if touching the handle area, not the buttons
       const target = e.target as HTMLElement;
       if (target.closest('button')) {
-        return; // Don't start drag if clicking a button
+        return;
       }
       e.preventDefault();
-      handleDragStart(e.touches[0].clientY);
+      handleDragStartRef.current(e.touches[0].clientY);
     };
 
     const touchMove = (e: TouchEvent) => {
       if (isDraggingRef.current) {
         e.preventDefault();
-        handleDragMove(e.touches[0].clientY);
+        handleDragMoveRef.current(e.touches[0].clientY);
       }
     };
 
     const touchEnd = (e: TouchEvent) => {
       if (isDraggingRef.current) {
         e.preventDefault();
-        handleDragEnd();
+        handleDragEndRef.current();
       }
     };
 
-    // Use non-passive listeners on handle
     handle.addEventListener('touchstart', touchStart, { passive: false });
-    
-    // Add global touchmove and touchend listeners so dragging continues even outside handle
     document.addEventListener('touchmove', touchMove, { passive: false });
     document.addEventListener('touchend', touchEnd, { passive: false });
 
@@ -301,24 +478,20 @@ function MobileBottomPanel({
       document.removeEventListener('touchmove', touchMove);
       document.removeEventListener('touchend', touchEnd);
     };
-  }, [handleDragStart, handleDragMove, handleDragEnd]);
+  }, [isOpen]);
 
-
-  // Mouse event handlers (for testing on desktop)
-  const handleMouseDown = useCallback((e: React.MouseEvent) => {
-    e.preventDefault();
-    handleDragStart(e.clientY);
-  }, [handleDragStart]);
-
+  // Mouse event handlers
   useEffect(() => {
-    if (!isDraggingRef.current) return;
-
     const handleMouseMove = (e: MouseEvent) => {
-      handleDragMove(e.clientY);
+      if (isDraggingRef.current) {
+        handleDragMoveRef.current(e.clientY);
+      }
     };
 
     const handleMouseUp = () => {
-      handleDragEnd();
+      if (isDraggingRef.current) {
+        handleDragEndRef.current();
+      }
     };
 
     window.addEventListener('mousemove', handleMouseMove);
@@ -328,14 +501,33 @@ function MobileBottomPanel({
       window.removeEventListener('mousemove', handleMouseMove);
       window.removeEventListener('mouseup', handleMouseUp);
     };
-  }, [handleDragMove, handleDragEnd]);
+  }, [isOpen]);
 
-  // Double tap on handle to toggle full/collapsed
+  useEffect(() => {
+    const handle = handleRef.current;
+    if (!handle) return;
+
+    const handleMouseDown = (e: MouseEvent) => {
+      const target = e.target as HTMLElement;
+      if (target.closest('button')) {
+        return;
+      }
+      e.preventDefault();
+      handleDragStartRef.current(e.clientY);
+    };
+
+    handle.addEventListener('mousedown', handleMouseDown);
+
+    return () => {
+      handle.removeEventListener('mousedown', handleMouseDown);
+    };
+  }, [isOpen]);
+
+  // Double tap handler
   const lastTapRef = useRef<number>(0);
   const handleDoubleTap = useCallback(() => {
     const now = Date.now();
     if (now - lastTapRef.current < 300) {
-      // Double tap detected
       if (panelState === 'full') {
         setPanelState('partial');
         setCurrentHeight(partialHeight);
@@ -349,13 +541,13 @@ function MobileBottomPanel({
     }
   }, [panelState, partialHeight, fullHeight]);
 
-  if (!isOpen) return null;
+  if (!isOpen || !content) return null;
 
   const showBackdrop = panelState === 'full';
 
   return (
-    <>
-      {/* Backdrop blur when full overlay */}
+    <div style={{ pointerEvents: 'auto' }}>
+      {/* Backdrop */}
       {showBackdrop && (
         <div
           className="fixed inset-0 z-40 md:hidden transition-opacity duration-300"
@@ -364,11 +556,11 @@ function MobileBottomPanel({
             backdropFilter: 'blur(4px)',
             WebkitBackdropFilter: 'blur(4px)',
           }}
-          onClick={onClose}
+          onClick={handleClose}
         />
       )}
 
-      {/* Bottom Panel */}
+      {/* Panel */}
       <div
         ref={panelRef}
         className="fixed bottom-0 left-0 right-0 z-50 md:hidden"
@@ -376,8 +568,9 @@ function MobileBottomPanel({
           height: `${currentHeight}px`,
           maxHeight: '100vh',
           transform: isOpen ? 'translateY(0)' : 'translateY(100%)',
-          transition: isDragging ? 'none' : 'height 0.2s ease-out, transform 0.2s ease-out',
-          willChange: isDragging ? 'height' : 'auto',
+          transition: 'height 0.2s ease-out, transform 0.2s ease-out',
+          willChange: 'height',
+          userSelect: 'none', // Apply to panel only, not entire document
         }}
       >
         <div
@@ -393,19 +586,17 @@ function MobileBottomPanel({
           <div
             ref={handleRef}
             className="shrink-0 flex flex-col items-center cursor-grab active:cursor-grabbing touch-none select-none"
-            onMouseDown={handleMouseDown}
             style={{
               backgroundColor: 'var(--zen-note-header-bg, #fef3c7)',
               borderBottomWidth: '1px',
               borderBottomStyle: 'solid',
               borderBottomColor: 'var(--zen-note-border, #fde68a)',
-              touchAction: 'none', // Prevent default touch behaviors
-              paddingTop: '16px', // Increased padding for easier grabbing
+              touchAction: 'none',
+              paddingTop: '16px',
               paddingBottom: '12px',
-              minHeight: '64px', // Minimum height for easier touch target
+              minHeight: '64px',
             }}
           >
-            {/* Handle indicator - draggable area */}
             <div
               className="w-12 h-1.5 rounded-full my-2"
               onClick={handleDoubleTap}
@@ -470,38 +661,59 @@ function MobileBottomPanel({
             </div>
           </div>
 
-          {/* Content Area - Render content based on active tab */}
+          {/* Content Area */}
           <div className="flex-1 overflow-hidden flex flex-col">
-            {activeTab === 'translation' && translationContent && (
-              <ScrollableContent onScrollToBottom={onClose}>
-                {translationContent}
+            {activeTab === 'translation' && (
+              <ScrollableContent onScrollToBottom={handleClose}>
+                <TranslationContent
+                  translation={content.translation}
+                  translationError={content.translationError}
+                  isTranslating={content.isTranslating}
+                  paragraphHash={content.paragraphHash}
+                />
               </ScrollableContent>
             )}
-            {activeTab === 'note' && noteContent && (
-              <ScrollableContent onScrollToBottom={onClose}>
-                {noteContent}
+            {activeTab === 'note' && (
+              <ScrollableContent onScrollToBottom={handleClose}>
+                <NoteEditor
+                  initialContent={content.noteContent}
+                  paragraphHash={content.paragraphHash}
+                />
               </ScrollableContent>
             )}
-            {activeTab === 'chat' && chatContent && (
-              <ScrollableContent onScrollToBottom={onClose}>
-                {chatContent}
+            {activeTab === 'chat' && content.bookId && (
+              <ScrollableContent onScrollToBottom={handleClose}>
+                <ChatAssistant
+                  bookId={content.bookId}
+                  paragraphHash={content.paragraphHash}
+                  paragraphText={content.paragraphText}
+                  translation={content.translation}
+                  isOpen={true}
+                  onClose={handleClose}
+                  showAllChats={false}
+                  isMobile={true}
+                  onChatCreated={() => {
+                    dispatchChatCreated({
+                      bookId: content.bookId,
+                      paragraphHash: content.paragraphHash,
+                      threadId: content.chatThreadId,
+                    });
+                  }}
+                  onChatDeleted={() => {
+                    dispatchChatDeleted({
+                      bookId: content.bookId,
+                      paragraphHash: content.paragraphHash,
+                      threadId: content.chatThreadId,
+                    });
+                  }}
+                />
               </ScrollableContent>
             )}
           </div>
         </div>
       </div>
-    </>
+    </div>
   );
 }
 
-// Memoize to prevent re-renders when parent re-renders
-// CRITICAL: Only compare essential props for panel visibility/initial state
-// Content props use refs in parent so they're stable between renders
-export default React.memo(MobileBottomPanel, (prevProps, nextProps) => {
-  // Re-render only when panel opens/closes or initial tab changes
-  if (prevProps.isOpen !== nextProps.isOpen) return false;
-  if (prevProps.initialTab !== nextProps.initialTab) return false;
-  // Don't compare content props - they're memoized with refs in parent
-  // and React's children reconciliation will handle actual changes efficiently
-  return true;
-});
+export default MobileBottomPanel;

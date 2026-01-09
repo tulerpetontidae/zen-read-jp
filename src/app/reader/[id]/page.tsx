@@ -1,7 +1,6 @@
 'use client';
 
 import React, { useEffect, useRef, useState, use, useMemo, useCallback } from 'react';
-import { createPortal } from 'react-dom';
 import { db } from '@/lib/db';
 import ePub, { Book } from 'epubjs';
 import { FaChevronLeft } from 'react-icons/fa';
@@ -15,6 +14,15 @@ import MobileBottomPanel, { type BottomPanelTab } from '@/components/MobileBotto
 import ChatAssistant from '@/components/ChatAssistant';
 import { useIsMobile } from '@/hooks/useIsMobile';
 import { ReaderDataProvider, useReaderDataStore, useActiveParagraphHash as useContextActiveParagraph } from '@/contexts/ReaderDataContext';
+import { initializePanelRoot, cleanupPanelRoot } from '@/utils/panelRoot';
+import { 
+    dispatchPanelClose,
+    subscribeToNoteSave, 
+    subscribeToTranslationRetry,
+    subscribeToPanelClose,
+    subscribeToChatCreated,
+    subscribeToChatDeleted,
+} from '@/utils/panelEventBridge';
 
 function debounce(func: Function, wait: number) {
     let timeout: NodeJS.Timeout;
@@ -59,105 +67,6 @@ function getTextContent(node: React.ReactNode): string {
     }
     return '';
 }
-
-// Note editor component for mobile bottom panel with local state management
-const NoteEditorMobile = React.memo(function NoteEditorMobile({ 
-    initialContent, 
-    onUpdate 
-}: { 
-    initialContent: string; 
-    onUpdate: (content: string) => void;
-}) {
-    const [localContent, setLocalContent] = useState(initialContent);
-    const saveTimeoutRef = useRef<NodeJS.Timeout | null>(null);
-    const isUserTypingRef = useRef(false);
-    const lastSavedContentRef = useRef(initialContent);
-    const isInitialMountRef = useRef(true);
-
-    // Initialize on mount
-    useEffect(() => {
-        isInitialMountRef.current = false;
-        lastSavedContentRef.current = initialContent;
-    }, []);
-
-    // Only update local content when initialContent changes AND:
-    // 1. User is not typing
-    // 2. The content is different from what we last saved (external change)
-    // 3. It's not the initial mount
-    useEffect(() => {
-        if (isInitialMountRef.current) {
-            return;
-        }
-        
-        // If user is typing, don't overwrite
-        if (isUserTypingRef.current) {
-            return;
-        }
-        
-        // If the new content matches what we last saved, it's our own save - ignore
-        if (initialContent === lastSavedContentRef.current) {
-            return;
-        }
-        
-        // This is an external change (e.g., from another device/tab) - update local state
-        setLocalContent(initialContent);
-        lastSavedContentRef.current = initialContent;
-    }, [initialContent]);
-
-    const handleChange = (e: React.ChangeEvent<HTMLTextAreaElement>) => {
-        const newContent = e.target.value;
-        isUserTypingRef.current = true;
-        setLocalContent(newContent);
-        
-        // Debounce save to DB
-        if (saveTimeoutRef.current) {
-            clearTimeout(saveTimeoutRef.current);
-        }
-        saveTimeoutRef.current = setTimeout(() => {
-            isUserTypingRef.current = false;
-            lastSavedContentRef.current = newContent;
-            onUpdate(newContent);
-        }, 500); // Save after 500ms of no typing
-    };
-
-    const handleBlur = () => {
-        // Save immediately on blur
-        isUserTypingRef.current = false;
-        if (saveTimeoutRef.current) {
-            clearTimeout(saveTimeoutRef.current);
-        }
-        lastSavedContentRef.current = localContent;
-        onUpdate(localContent);
-    };
-
-    useEffect(() => {
-        return () => {
-            if (saveTimeoutRef.current) {
-                clearTimeout(saveTimeoutRef.current);
-            }
-        };
-    }, []);
-
-    return (
-        <div className="h-full flex flex-col p-4">
-            <textarea
-                value={localContent}
-                onChange={handleChange}
-                onBlur={handleBlur}
-                placeholder="Write your note..."
-                className="w-full flex-1 p-3 text-sm resize-none focus:outline-none rounded-lg"
-                style={{
-                    fontFamily: 'system-ui, sans-serif',
-                    backgroundColor: 'var(--zen-note-bg, white)',
-                    color: 'var(--zen-text, #44403c)',
-                    borderWidth: '1px',
-                    borderStyle: 'solid',
-                    borderColor: 'var(--zen-note-border, #fcd34d)',
-                }}
-            />
-        </div>
-    );
-});
 
 // Wrapper component that provides the context
 export default function ReaderPage({ params }: { params: Promise<{ id: string }> }) {
@@ -970,148 +879,112 @@ function ReaderPageContent({ params }: { params: Promise<{ id: string }> }) {
         };
     }, [id]);
 
-    // Open bottom panel when active paragraph changes
+    // Initialize isolated panel root on mobile (completely separate React tree)
+    useEffect(() => {
+        if (isMobile) {
+            initializePanelRoot(MobileBottomPanel);
+        }
+        return () => {
+            cleanupPanelRoot();
+        };
+    }, [isMobile]);
+
+    // Track when panel should be open (TranslatableParagraph dispatches panel:open events directly)
     useEffect(() => {
         if (activeParagraphHash && isMobile) {
             setBottomPanelOpen(true);
         }
     }, [activeParagraphHash, isMobile]);
 
+    // Subscribe to panel events from the isolated panel
+    useEffect(() => {
+        if (!isMobile) return;
+
+        // Handle note saves from the panel
+        const unsubNoteSave = subscribeToNoteSave(async (payload) => {
+            const { paragraphHash, content } = payload;
+            const noteId = `${id}-${paragraphHash}`;
+            try {
+                // First check if note exists to preserve createdAt
+                const existingNote = await db.notes.get(noteId);
+                await db.notes.put({
+                    id: noteId,
+                    bookId: id,
+                    paragraphHash,
+                    content,
+                    height: existingNote?.height,
+                    createdAt: existingNote?.createdAt || Date.now(),
+                    updatedAt: Date.now(),
+                });
+                // Update local map
+                const newMap = new Map(noteMapRef.current);
+                newMap.set(paragraphHash, { content, height: existingNote?.height });
+                setNoteMap(newMap);
+                dataStore.setNote(paragraphHash, { content });
+            } catch (e) {
+                console.error('Failed to save note from panel:', e);
+            }
+        });
+
+        // Handle translation retries from the panel
+        const unsubRetry = subscribeToTranslationRetry((payload) => {
+            const { paragraphHash } = payload;
+            // Find the paragraph and trigger translation
+            const paragraphElement = containerRef.current?.querySelector(`[data-paragraph-hash="${paragraphHash}"]`) as HTMLElement;
+            if (paragraphElement) {
+                const translateButton = paragraphElement.querySelector('[data-translate-button]') as HTMLElement;
+                if (translateButton) {
+                    translateButton.click();
+                }
+            }
+        });
+
+        // Handle panel close from the isolated panel
+        const unsubClose = subscribeToPanelClose(() => {
+            setBottomPanelOpen(false);
+            dataStore.setActiveParagraphHash(null);
+        });
+
+        // Handle chat created from the panel
+        const unsubChatCreated = subscribeToChatCreated((payload) => {
+            const { threadId } = payload;
+            const newMap = new Map(chatMapRef.current);
+            newMap.set(threadId, true);
+            setChatMap(newMap);
+            dataStore.setChat(payload.paragraphHash, true);
+        });
+
+        // Handle chat deleted from the panel
+        const unsubChatDeleted = subscribeToChatDeleted((payload) => {
+            const { threadId } = payload;
+            const newMap = new Map(chatMapRef.current);
+            newMap.delete(threadId);
+            setChatMap(newMap);
+            dataStore.setChat(payload.paragraphHash, false);
+        });
+
+        return () => {
+            unsubNoteSave();
+            unsubRetry();
+            unsubClose();
+            unsubChatCreated();
+            unsubChatDeleted();
+        };
+    }, [isMobile, id, dataStore]);
+
+    // Note: TranslatableParagraph now dispatches panel:content-update events directly
+    // when translation completes, so no need to watch translationMap changes here.
+
     // Stable callbacks for bottom panel to prevent re-renders
     const handleBottomPanelClose = useCallback(() => {
         setBottomPanelOpen(false);
+        dispatchPanelClose();
         // Clear active paragraph in context
         dataStore.setActiveParagraphHash(null);
     }, [dataStore]);
 
-    // Memoize bottom panel content to prevent unnecessary re-renders
-    // IMPORTANT: Don't depend on bottomPanelTab to avoid recalculating on every tab switch
-    const translationContent = useMemo(() => {
-        if (!activeTranslationParagraphHash) return null;
-        
-        const paragraphHash = activeTranslationParagraphHash;
-        const cachedTranslation = translationMap.get(paragraphHash);
-        const translation = cachedTranslation?.translatedText || null;
-        const translationError = translationErrors.get(paragraphHash) || null;
-        
-        return (
-            <div className="h-full flex flex-col p-4">
-                {translationError ? (
-                    <div className="flex-1 flex items-center justify-center text-center p-4">
-                        <div className="w-full">
-                            <div className="p-4 bg-red-50 border border-red-200 rounded-lg text-red-600 text-sm">
-                                {translationError}
-                            </div>
-                            <button
-                                onClick={async () => {
-                                    // Find the paragraph and trigger translation
-                                    const paragraphElement = containerRef.current?.querySelector(`[data-paragraph-hash="${paragraphHash}"]`) as HTMLElement;
-                                    if (paragraphElement) {
-                                        // Trigger translation by simulating button click
-                                        const translateButton = paragraphElement.querySelector('[data-translate-button]') as HTMLElement;
-                                        if (translateButton) {
-                                            translateButton.click();
-                                        }
-                                    }
-                                }}
-                                className="mt-4 w-full px-4 py-2 bg-rose-500 hover:bg-rose-600 text-white text-sm font-medium rounded-lg transition-colors"
-                            >
-                                Retry Translation
-                            </button>
-                        </div>
-                    </div>
-                ) : translation ? (
-                    <div 
-                        className="flex-1 overflow-y-auto p-4 rounded-lg"
-                        style={{
-                            backgroundColor: 'var(--zen-translation-bg, rgba(255, 241, 242, 0.5))',
-                            borderWidth: '1px',
-                            borderStyle: 'solid',
-                            borderColor: 'var(--zen-translation-border, #fecdd3)',
-                            color: 'var(--zen-translation-text, #57534e)',
-                            fontFamily: 'system-ui, sans-serif',
-                            fontSize: '14px',
-                            lineHeight: '1.6',
-                        }}
-                    >
-                        {translation}
-                    </div>
-                ) : (
-                    <div className="flex-1 flex items-center justify-center text-center text-sm" style={{ color: 'var(--zen-text-muted, #78716c)' }}>
-                        <div>
-                            <p className="mb-4">Translation not available yet</p>
-                            <button
-                                onClick={async () => {
-                                    // Find the paragraph and trigger translation
-                                    const paragraphElement = containerRef.current?.querySelector(`[data-paragraph-hash="${paragraphHash}"]`) as HTMLElement;
-                                    if (paragraphElement) {
-                                        // Trigger translation by simulating button click
-                                        const translateButton = paragraphElement.querySelector('[data-translate-button]') as HTMLElement;
-                                        if (translateButton) {
-                                            translateButton.click();
-                                        }
-                                    }
-                                }}
-                                className="px-4 py-2 bg-rose-500 hover:bg-rose-600 text-white text-sm font-medium rounded-lg transition-colors"
-                            >
-                                Translate Now
-                            </button>
-                        </div>
-                    </div>
-                )}
-            </div>
-        );
-    }, [activeTranslationParagraphHash, activeTranslation?.translatedText, activeTranslationError]);
-
-    // Chat content - computed independently of active tab
-    const chatContent = useMemo(() => {
-        if (!activeChatParagraphHash) return null;
-        
-        const paragraphHash = activeChatParagraphHash;
-        const threadId = activeChatThreadId || `${id}|${paragraphHash}`;
-        // Use cached paragraph text instead of DOM query
-        const paragraphText = paragraphTextMapRef.current.get(paragraphHash) || '';
-        // Use ref to get translation without including entire map in dependencies
-        const paragraphTranslation = translationMapRef.current.get(paragraphHash);
-        const translation = paragraphTranslation?.translatedText || null;
-        
-        return (
-            <ChatAssistant
-                bookId={id}
-                paragraphHash={paragraphHash}
-                paragraphText={paragraphText}
-                translation={translation}
-                isOpen={true}
-                onClose={() => {
-                    setBottomPanelOpen(false);
-                }}
-                showAllChats={false}
-                isMobile={true}
-                onChatDeleted={() => {
-                    const newMap = new Map(chatMapRef.current);
-                    newMap.delete(threadId);
-                    setChatMap(newMap);
-                }}
-                onChatCreated={() => {
-                    const newMap = new Map(chatMapRef.current);
-                    newMap.set(threadId, true);
-                    setChatMap(newMap);
-                }}
-            />
-        );
-    }, [activeChatParagraphHash, id, activeChatThreadId]);
-
-    // Memoize the note editor JSX to prevent recreating on every render
-    const noteEditorContent = useMemo(() => {
-        if (!activeNoteContent) return undefined;
-        return (
-            <NoteEditorMobile
-                key={activeNoteContent.paragraphHash}
-                initialContent={activeNoteContent.content}
-                onUpdate={activeNoteContent.onUpdate}
-            />
-        );
-    }, [activeNoteContent]);
+    // Note: Bottom panel content (translation, note, chat) is now rendered by the
+    // isolated MobileBottomPanel component in its own React root. No content useMemos needed here.
 
     return (
         <div className="fixed inset-0 flex flex-col overflow-hidden" style={{ backgroundColor: 'var(--zen-reader-bg, #FDFBF7)' }}>
@@ -1367,18 +1240,8 @@ function ReaderPageContent({ params }: { params: Promise<{ id: string }> }) {
                 }
             `}</style>
 
-                {/* Mobile Bottom Panel - Rendered in Portal for Complete Isolation */}
-                {isMobile && !zenMode && typeof window !== 'undefined' && createPortal(
-                    <MobileBottomPanel
-                        isOpen={bottomPanelOpen}
-                        initialTab={bottomPanelTab}
-                        onClose={handleBottomPanelClose}
-                        translationContent={translationContent}
-                        noteContent={noteEditorContent}
-                        chatContent={chatContent}
-                    />,
-                    document.body
-                )}
+                {/* Mobile Bottom Panel is now rendered in a completely isolated React root */}
+                {/* See initializePanelRoot() in useEffect - no portal needed */}
 
             <SettingsModal 
                 isOpen={isSettingsOpen} 

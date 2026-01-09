@@ -18,6 +18,7 @@ import {
     useActiveParagraphHash,
     useBookmarkGroups,
 } from '@/contexts/ReaderDataContext';
+import { dispatchPanelContentUpdate, dispatchPanelOpen } from '@/utils/panelEventBridge';
 
 interface TranslatableParagraphProps {
     children: React.ReactNode;
@@ -317,11 +318,25 @@ const TranslatableParagraph = React.memo(function TranslatableParagraph({
         if (isMobile) {
             // Set active paragraph so bottom panel knows which paragraph is active
             dataStore.setActiveParagraphHash(paragraphHash);
+            
+            // Dispatch panel open event with current data
+            dispatchPanelOpen({
+                tab: 'translation',
+                paragraphHash,
+                paragraphText,
+                translation: translation || null,
+                translationError: error || null,
+                isTranslating: !translation, // Will start translating if no translation
+                noteContent: noteContent || '',
+                bookId,
+                chatThreadId: `${bookId}|${paragraphHash}`,
+            });
+            
             // If translation doesn't exist, fetch it
             if (!translation) {
                 // Trigger translation (continue with normal flow)
             } else {
-                // Translation exists, just opened panel - bottom panel will handle display
+                // Translation exists, panel opened - done
                 return;
             }
         } else {
@@ -334,6 +349,17 @@ const TranslatableParagraph = React.memo(function TranslatableParagraph({
 
         setIsLoading(true);
         setError(null);
+        
+        // Dispatch "translating" state to isolated panel (if open on mobile)
+        if (isMobile) {
+            dispatchPanelContentUpdate({
+                paragraphHash,
+                type: 'translation',
+                translation: null,
+                translationError: null,
+                isTranslating: true,
+            });
+        }
 
         try {
             // Get translation engine, API key, target language, and book source language
@@ -412,6 +438,17 @@ const TranslatableParagraph = React.memo(function TranslatableParagraph({
             if (!isMobile) {
                 setShowTranslation(true);
             }
+            
+            // Dispatch to isolated panel (if open on mobile)
+            if (isMobile) {
+                dispatchPanelContentUpdate({
+                    paragraphHash,
+                    type: 'translation',
+                    translation: translatedText,
+                    translationError: null,
+                    isTranslating: false,
+                });
+            }
         } catch (e) {
             console.error('Translation error:', e);
             const errorMessage = e instanceof Error ? e.message : 'Translation failed';
@@ -420,6 +457,17 @@ const TranslatableParagraph = React.memo(function TranslatableParagraph({
             dataStore.setTranslationError(paragraphHash, errorMessage);
             // Clear translation from store
             dataStore.setTranslation(paragraphHash, null);
+            
+            // Dispatch error to isolated panel (if open on mobile)
+            if (isMobile) {
+                dispatchPanelContentUpdate({
+                    paragraphHash,
+                    type: 'translation',
+                    translation: null,
+                    translationError: errorMessage,
+                    isTranslating: false,
+                });
+            }
         } finally {
             setIsLoading(false);
         }
@@ -458,7 +506,19 @@ const TranslatableParagraph = React.memo(function TranslatableParagraph({
         if (isMobile) {
             // On mobile, set active paragraph for bottom panel
             dataStore.setActiveParagraphHash(paragraphHash);
-            // Bottom panel will handle display based on active paragraph
+            
+            // Dispatch panel open event with note tab
+            dispatchPanelOpen({
+                tab: 'note',
+                paragraphHash,
+                paragraphText,
+                translation: translation || null,
+                translationError: error || null,
+                isTranslating: false,
+                noteContent: noteContent || '',
+                bookId,
+                chatThreadId: `${bookId}|${paragraphHash}`,
+            });
         } else {
             // Desktop: toggle note sidebar
             const wasOpen = isNoteOpen;
@@ -612,7 +672,19 @@ const TranslatableParagraph = React.memo(function TranslatableParagraph({
                 // Mark as having chat when opening for first time
                 setHasChat(true);
             }
-            // Note: Bottom panel will be handled by page component watching activeParagraphHash
+            
+            // Dispatch panel open event with chat tab
+            dispatchPanelOpen({
+                tab: 'chat',
+                paragraphHash,
+                paragraphText,
+                translation: translation || null,
+                translationError: error || null,
+                isTranslating: false,
+                noteContent: noteContent || '',
+                bookId,
+                chatThreadId: `${bookId}|${paragraphHash}`,
+            });
         } else {
             // Desktop: toggle chat sidebar
             setIsChatOpen(!isChatOpen);
