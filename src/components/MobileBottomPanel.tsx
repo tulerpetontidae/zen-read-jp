@@ -14,6 +14,7 @@ import {
   dispatchPanelClose,
   dispatchChatCreated,
   dispatchChatDeleted,
+  dispatchPanelContentUpdate,
 } from '@/utils/panelEventBridge';
 
 // Re-export BottomPanelTab for external use
@@ -164,11 +165,37 @@ function TranslationContent({
           </div>
         </div>
       ) : translation ? (
-        <div
-          className="flex-1 text-sm leading-relaxed"
-          style={{ color: 'var(--zen-text, #1a1a1a)' }}
-        >
-          {translation}
+        <div className="flex-1 flex flex-col relative pb-12">
+          <div
+            className="flex-1 text-sm leading-relaxed"
+            style={{ color: 'var(--zen-text, #1a1a1a)' }}
+          >
+            {translation}
+          </div>
+          {/* Delete button - bottom right corner */}
+          <button
+            onClick={() => {
+              // Clear translation by dispatching content update with null translation
+              // This will update the UI to show no translation
+              dispatchPanelContentUpdate({
+                paragraphHash,
+                type: 'translation',
+                translation: null,
+                translationError: null,
+                isTranslating: false,
+              });
+            }}
+            className="absolute bottom-0 right-0 p-2.5 rounded-full hover:bg-black/10 active:bg-black/20 transition-colors touch-manipulation"
+            style={{ color: 'var(--zen-text-muted, #78716c)' }}
+            title="Clear translation"
+            aria-label="Clear translation"
+          >
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+              <path d="M3 6h18M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2" />
+              <line x1="10" y1="11" x2="10" y2="17" />
+              <line x1="14" y1="11" x2="14" y2="17" />
+            </svg>
+          </button>
         </div>
       ) : isTranslating ? (
         <div className="flex-1 flex items-center justify-center">

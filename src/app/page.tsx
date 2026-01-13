@@ -1,6 +1,7 @@
 'use client';
 
 import React, { useState, useEffect, useRef } from "react";
+import { createPortal } from "react-dom";
 import FileUpload from "@/components/FileUpload";
 import { useLiveQuery } from "dexie-react-hooks";
 import { db } from "@/lib/db";
@@ -8,12 +9,73 @@ import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { FaBook } from "react-icons/fa";
 import { RiDeleteBinLine, RiPencilLine } from "react-icons/ri";
-import { IoSettingsOutline } from "react-icons/io5";
+import { IoSettingsOutline, IoArrowBack, IoBookOutline, IoLanguageOutline, IoCloudOfflineOutline, IoCheckmarkCircleOutline, IoPencilOutline, IoBarChartOutline } from "react-icons/io5";
 import { FaGithub } from "react-icons/fa";
 import ePub from "epubjs";
 import { initializeDefaultBook } from "@/lib/initDefaultBook";
 import { initializeBookmarkGroups } from "@/lib/db";
 import { SUPPORTED_LANGUAGES, getLanguageName, getLanguageCode, getLongestLanguageName, LANGUAGE_MAP } from "@/lib/languages";
+
+// Keyword highlighting component with hover tooltip
+function KeywordHighlight({ word, definition }: { word: string; definition: string }) {
+  const [isHovered, setIsHovered] = useState(false);
+  const [tooltipPosition, setTooltipPosition] = useState({ top: 0, left: 0 });
+  const [mounted, setMounted] = useState(false);
+  const wordRef = useRef<HTMLSpanElement>(null);
+
+  useEffect(() => {
+    setMounted(true);
+  }, []);
+
+  const handleMouseEnter = (e: React.MouseEvent<HTMLSpanElement>) => {
+    if (wordRef.current) {
+      const rect = wordRef.current.getBoundingClientRect();
+      // Position relative to viewport, then add scroll offset
+      setTooltipPosition({
+        top: rect.bottom + 8, // 8px below the word
+        left: rect.left + (rect.width / 2), // Center of the word
+      });
+    }
+    setIsHovered(true);
+  };
+
+  const tooltip = isHovered && mounted ? createPortal(
+    <div
+      className="fixed z-50 max-w-xs px-3 py-2 text-xs font-light leading-relaxed rounded-lg shadow-lg pointer-events-none"
+      style={{
+        top: `${tooltipPosition.top}px`,
+        left: `${tooltipPosition.left}px`,
+        transform: 'translateX(-50%)',
+        backgroundColor: 'var(--zen-card-solid-bg, #ffffff)',
+        border: '1px solid var(--zen-border, rgba(0,0,0,0.1))',
+        color: 'var(--zen-text, #1c1917)',
+        opacity: isHovered ? 1 : 0,
+        transition: 'opacity 0.2s ease-in-out',
+      }}
+    >
+      {definition}
+    </div>,
+    document.body
+  ) : null;
+
+  return (
+    <>
+      <span
+        ref={wordRef}
+        onMouseEnter={handleMouseEnter}
+        onMouseLeave={() => setIsHovered(false)}
+        className="relative cursor-help underline decoration-dotted underline-offset-2 decoration-1 transition-all hover:decoration-2 font-medium"
+        style={{ 
+          textDecorationColor: 'var(--zen-text-muted, #78716c)',
+          color: 'var(--zen-text, #1c1917)',
+        }}
+      >
+        {word}
+      </span>
+      {tooltip}
+    </>
+  );
+}
 
 // Extract cover image from EPUB (best effort)
 async function extractCoverImage(arrayBuffer: ArrayBuffer): Promise<string | undefined> {
@@ -71,6 +133,7 @@ export default function Home() {
   const [editingLanguageId, setEditingLanguageId] = useState<string | null>(null);
   const [editLanguage, setEditLanguage] = useState("");
   const [deletingBookId, setDeletingBookId] = useState<string | null>(null);
+  const [showHowToUse, setShowHowToUse] = useState(false);
 
   // Track initial animation so first load shows full JP/日本語 without typing
   const hasInitialTitleAnimationRunRef = useRef(false);
@@ -287,6 +350,17 @@ export default function Home() {
     }
   };
 
+  // Handle keyboard navigation for How to Use view
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape' && showHowToUse) {
+        setShowHowToUse(false);
+      }
+    };
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [showHowToUse]);
+
   return (
     <div className="min-h-screen bg-[var(--zen-bg,#Fdfbf7)] text-[var(--zen-text,#1c1917)] font-sans selection:bg-rose-200 overflow-x-hidden relative">
 
@@ -310,10 +384,10 @@ export default function Home() {
         <div className="absolute bottom-[-20%] right-[-10%] w-[60vw] h-[60vw] bg-emerald-100/30 dark:bg-emerald-900/10 rounded-full blur-3xl opacity-60 animate-pulse duration-[12s]" />
       </div>
 
-      <main className="container mx-auto px-6 py-24 flex flex-col items-center relative z-10">
+      <main className={`container mx-auto px-6 ${showHowToUse ? 'pt-8 pb-8' : 'py-24'} flex flex-col items-center relative z-10`}>
 
         {/* Header */}
-        <header className="mb-16 text-center space-y-6 animate-in fade-in slide-in-from-bottom-8 duration-1000">
+        <header className={`${showHowToUse ? 'mb-6' : 'mb-16'} text-center space-y-6 animate-in fade-in slide-in-from-bottom-8 duration-1000`}>
           <div className="inline-block mb-4">
             <img src="/landing_zen.svg" alt="EnsoRead" className="w-32 h-32" style={{ filter: 'var(--zen-logo-filter, none)' }} />
           </div>
@@ -351,18 +425,325 @@ export default function Home() {
             </span>
             {' '}
             <span style={{ color: 'var(--zen-text-muted, #78716c)' }}>through </span>
-            <span className="font-normal" style={{ color: 'var(--zen-text, #1c1917)' }}>reading immersion</span>.
+            <span className="font-normal block md:inline" style={{ color: 'var(--zen-text, #1c1917)' }}>reading immersion</span>.
           </p>
+          <div className="mt-8 h-10 flex items-center justify-center" style={{ minHeight: '2.5rem' }}>
+            <button
+              onClick={() => {
+                setShowHowToUse(true);
+                
+                // Wait for React to render the Philosophy section and scroll so BACK button is at top
+                requestAnimationFrame(() => {
+                  requestAnimationFrame(() => {
+                    setTimeout(() => {
+                      // Find the BACK button - this should be the topmost element visible
+                      const backButton = document.querySelector('[data-back-button]') as HTMLElement;
+                      if (backButton) {
+                        // Scroll so the BACK button is at the top of the viewport
+                        const backButtonRect = backButton.getBoundingClientRect();
+                        const currentScrollY = window.scrollY;
+                        const backButtonAbsoluteTop = backButtonRect.top + currentScrollY;
+                        // Scroll to position the button at the very top (with a small offset for padding)
+                        const targetScroll = backButtonAbsoluteTop - 20; // 20px offset for visual padding
+                        window.scrollTo({ top: Math.max(0, targetScroll), behavior: 'smooth' });
+                      }
+                    }, 400); // Wait for animations to complete
+                  });
+                });
+              }}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter' || e.key === ' ') {
+                  e.preventDefault();
+                  setShowHowToUse(true);
+                  
+                  requestAnimationFrame(() => {
+                    requestAnimationFrame(() => {
+                      setTimeout(() => {
+                        const backButton = document.querySelector('[data-back-button]') as HTMLElement;
+                        if (backButton) {
+                          const backButtonRect = backButton.getBoundingClientRect();
+                          const currentScrollY = window.scrollY;
+                          const backButtonAbsoluteTop = backButtonRect.top + currentScrollY;
+                          const targetScroll = backButtonAbsoluteTop - 20;
+                          window.scrollTo({ top: Math.max(0, targetScroll), behavior: 'smooth' });
+                        }
+                      }, 400);
+                    });
+                  });
+                }
+              }}
+              className={`inline-flex items-center gap-2 px-0 py-2 transition-opacity duration-500 hover:opacity-70 focus:outline-none focus:ring-2 focus:ring-rose-300 focus:ring-offset-2 rounded-sm ${
+                showHowToUse ? 'opacity-0 pointer-events-none invisible' : 'opacity-100 pointer-events-auto visible'
+              }`}
+              style={{
+                color: 'var(--zen-text-muted, #78716c)',
+                backgroundColor: 'transparent',
+              }}
+              aria-label="View Philosophy & Guide"
+              ref={(el) => {
+                if (el) {
+                  (window as any).philosophyButtonRef = el;
+                }
+              }}
+            >
+              <span className="text-sm font-light tracking-wider uppercase letter-spacing-wider border-b border-current pb-0.5 transition-all duration-300 hover:border-opacity-50" style={{ borderColor: 'var(--zen-text-muted, #78716c)' }}>
+                Philosophy & Guide
+              </span>
+            </button>
+          </div>
         </header>
 
-        {/* Upload Section */}
-        <section className="w-full flex justify-center mb-20 animate-in fade-in slide-in-from-bottom-12 duration-1000 delay-200">
-          <FileUpload />
+        {/* How to Use Content Section */}
+        {showHowToUse && (
+        <section 
+          data-philosophy-section
+          className="w-full max-w-4xl mx-auto px-4 md:px-6 animate-in fade-in slide-in-from-bottom-12 duration-500"
+          style={{
+            animationFillMode: 'forwards',
+            marginBottom: 0,
+            paddingBottom: 0,
+            marginTop: 0,
+          }}
+        >
+            {/* Back Button */}
+            <button
+              data-back-button
+              onClick={() => {
+                setShowHowToUse(false);
+                // Scroll all the way to the top
+                setTimeout(() => {
+                  window.scrollTo({ top: 0, behavior: 'smooth' });
+                }, 100);
+              }}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter' || e.key === ' ') {
+                  e.preventDefault();
+                  setShowHowToUse(false);
+                  setTimeout(() => {
+                    window.scrollTo({ top: 0, behavior: 'smooth' });
+                  }, 100);
+                }
+              }}
+              className="mb-6 md:mb-8 inline-flex items-center gap-2 px-0 py-2 transition-all duration-300 hover:opacity-70 focus:outline-none focus:ring-2 focus:ring-rose-300 focus:ring-offset-2 rounded-sm min-h-[44px] touch-manipulation"
+              style={{
+                color: 'var(--zen-text-muted, #78716c)',
+                backgroundColor: 'transparent',
+              }}
+              aria-label="Back to main view"
+            >
+              <IoArrowBack size={18} />
+              <span className="text-sm font-light tracking-wider uppercase letter-spacing-wider border-b border-current pb-0.5 transition-all duration-300 hover:border-opacity-50" style={{ borderColor: 'var(--zen-text-muted, #78716c)' }}>
+                Back
+              </span>
+            </button>
+
+            {/* Content */}
+            <div style={{ display: 'flex', flexDirection: 'column', gap: showHowToUse ? '2rem' : 0, paddingBottom: 0, marginBottom: 0, paddingTop: 0 }}>
+              {/* Header */}
+              <div className="text-center" style={{ marginTop: 0, marginBottom: 0 }}>
+                <h2 
+                  data-philosophy-heading
+                  className="text-3xl md:text-4xl lg:text-5xl font-serif font-light tracking-tight mb-4 px-2" 
+                  style={{ color: 'var(--zen-heading, #1c1917)' }}
+                >
+                  Philosophy & Guide
+                </h2>
+              </div>
+
+              {/* Philosophy Section */}
+              <div className="backdrop-blur-sm rounded-2xl md:rounded-3xl p-6 md:p-8 lg:p-12 shadow-lg" style={{ 
+                backgroundColor: 'var(--zen-card-bg, rgba(255,255,255,0.4))',
+                borderWidth: '1px',
+                borderStyle: 'solid',
+                borderColor: 'var(--zen-border, rgba(255,255,255,0.4))',
+              }}>
+                <h3 className="text-xl md:text-2xl lg:text-3xl font-serif font-light mb-4 md:mb-6" style={{ color: 'var(--zen-heading, #1c1917)' }}>
+                  The Immersive Reading Approach
+                </h3>
+                <div className="space-y-4 text-sm md:text-base lg:text-lg font-light leading-relaxed" style={{ color: 'var(--zen-text, #1c1917)' }}>
+                  <p>
+                   At some point in your language learning, it helps to move beyond exercises and begin engaging with <span className="font-medium">native content</span>. Real fluency grows through context, where repeated exposure in real sentences makes vocabulary and grammar stick.</p>
+                  
+                  <p><span className="font-medium">Reading</span> is one of the simplest ways to do this, yet many learners struggle to maintain a reading habit in a foreign language. Gaps in understanding break concentration and create frustration, often making people quit too early. To stay engaged, when an unknown word, grammar pattern, or sentence structure sparks curiosity your brain needs fast answers. 
+                  </p>
+                  <p>
+                    Ens<span className="macron-o">ō</span>Read is built around this idea. It keeps you in the reading flow by giving you instant access to meanings and translations, exactly when curiosity arises. But be careful! <span className="font-medium">Use translation to verify your understanding, not to bypass it</span>. Leave notes for yourself by marking tricky grammar, saving useful vocabulary, or recording questions for later. With repeated exposure in meaningful contexts, comprehension grows naturally over time.
+                  </p>
+                </div>
+              </div>
+
+              {/* What is EnsōRead */}
+              <div className="backdrop-blur-sm rounded-2xl md:rounded-3xl p-6 md:p-8 lg:p-12 shadow-lg" style={{ 
+                backgroundColor: 'var(--zen-card-bg, rgba(255,255,255,0.4))',
+                borderWidth: '1px',
+                borderStyle: 'solid',
+                borderColor: 'var(--zen-border, rgba(255,255,255,0.4))',
+              }}>
+                <h3 className="text-xl md:text-2xl lg:text-3xl font-serif font-light mb-4 md:mb-6" style={{ color: 'var(--zen-heading, #1c1917)' }}>
+                  What is Ens<span className="macron-o">ō</span>Read?
+                </h3>
+                <div className="space-y-4 text-sm md:text-base lg:text-lg font-light leading-relaxed" style={{ color: 'var(--zen-text, #1c1917)' }}>
+                  <p>
+                   Ens<span className="macron-o">ō</span>Read is an EPUB reader designed specifically for language learning. It lets you upload books in your target language and read with support tools that preserve focus instead of interrupting it. You can view paragraph-level translations for <KeywordHighlight word="parallel reading" definition="Reading method where you see the original text alongside its translation, helping you understand meaning while maintaining reading flow." /> and consult an <KeywordHighlight word="AI companion" definition="An LLM model that can answer questions about language, grammar, and meaning alike to your native friend or tutor. Currently you will have to use your own OpenAI API key to use this feature." /> that can aswer arbitrary questions about the text on the fly. Think of it as having a native speaker or teacher beside you, ready to answer questions at the moment they arise. 
+                  </p>
+                  <p>
+                    The project began as a personal tool for Japanese reading comprehension and has since grown to support many language pairs. If you would like to request a feature, ask about language support, or report a bug, feel free to contact the developer via the <a href="https://github.com/tulerpetontidae/enso-read" target="_blank" rel="noopener noreferrer" className="underline decoration-1 underline-offset-2 hover:decoration-2 transition-all" style={{ color: 'var(--zen-text, #1c1917)', textDecorationColor: 'var(--zen-text-muted, #78716c)' }}>project's GitHub page</a>.
+                  </p>
+                </div>
+              </div>
+
+              {/* Features Section */}
+              <div className="backdrop-blur-sm rounded-2xl md:rounded-3xl p-6 md:p-8 lg:p-12 shadow-lg" style={{ 
+                backgroundColor: 'var(--zen-card-bg, rgba(255,255,255,0.4))',
+                borderWidth: '1px',
+                borderStyle: 'solid',
+                borderColor: 'var(--zen-border, rgba(255,255,255,0.4))',
+                marginBottom: 0,
+              }}>
+                <h3 className="text-xl md:text-2xl lg:text-3xl font-serif font-light mb-6 md:mb-8" style={{ color: 'var(--zen-heading, #1c1917)' }}>
+                  Key Features
+                </h3>
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-4 md:gap-6">
+                  {/* Feature 1: Translation */}
+                  <div className="flex gap-3 md:gap-4">
+                    <div className="flex-shrink-0 mt-0.5 md:mt-1" style={{ color: 'var(--zen-text-muted, #78716c)' }}>
+                      <IoLanguageOutline size={20} className="md:w-6 md:h-6" />
+                    </div>
+                    <div className="flex-1 min-w-0">
+                      <h4 className="text-base md:text-lg font-medium mb-1.5 md:mb-2" style={{ color: 'var(--zen-heading, #1c1917)' }}>On-Demand paragraph Translation</h4>
+                      <p className="text-xs md:text-sm font-light leading-relaxed" style={{ color: 'var(--zen-text-muted, #78716c)' }}>
+                        Get instant translations with multiple engines: OpenAI, Google Translate or Bergamot. For more powerful models you will need to set up an API key in Settings.
+                      </p>
+                    </div>
+                  </div>
+
+                  {/* Feature 2: Notes */}
+                  <div className="flex gap-3 md:gap-4">
+                    <div className="flex-shrink-0 mt-0.5 md:mt-1" style={{ color: 'var(--zen-text-muted, #78716c)' }}>
+                      <IoPencilOutline size={20} className="md:w-6 md:h-6" />
+                    </div>
+                    <div className="flex-1 min-w-0">
+                      <h4 className="text-base md:text-lg font-medium mb-1.5 md:mb-2" style={{ color: 'var(--zen-heading, #1c1917)' }}>Interactive notes and AI companion</h4>
+                      <p className="text-xs md:text-sm font-light leading-relaxed" style={{ color: 'var(--zen-text-muted, #78716c)' }}>
+                        Save notes directly in your books. Capture vocabulary, grammar insights, or personal thoughts as you read. Chat to an AI companion for explanations and clarifications (requires an API key in Settings). Your annotations stay with the text.
+                      </p>
+                    </div>
+                  </div>
+
+                  {/* Feature 3: Bookmarks */}
+                  <div className="flex gap-3 md:gap-4">
+                    <div className="flex-shrink-0 mt-0.5 md:mt-1" style={{ color: 'var(--zen-text-muted, #78716c)' }}>
+                      <IoBookOutline size={20} className="md:w-6 md:h-6" />
+                    </div>
+                    <div className="flex-1 min-w-0">
+                      <h4 className="text-base md:text-lg font-medium mb-1.5 md:mb-2" style={{ color: 'var(--zen-heading, #1c1917)' }}>Bookmarks & Progress</h4>
+                      <p className="text-xs md:text-sm font-light leading-relaxed" style={{ color: 'var(--zen-text-muted, #78716c)' }}>
+                        Bookmark important passages and track your reading progress. Visual indicators show how far you've come in each book.
+                      </p>
+                    </div>
+                  </div>
+
+                  {/* Feature 4: Multiple Languages */}
+                  <div className="flex gap-3 md:gap-4">
+                    <div className="flex-shrink-0 mt-0.5 md:mt-1" style={{ color: 'var(--zen-text-muted, #78716c)' }}>
+                      <IoCheckmarkCircleOutline size={20} className="md:w-6 md:h-6" />
+                    </div>
+                    <div className="flex-1 min-w-0">
+                      <h4 className="text-base md:text-lg font-medium mb-1.5 md:mb-2" style={{ color: 'var(--zen-heading, #1c1917)' }}>Multiple Languages</h4>
+                      <p className="text-xs md:text-sm font-light leading-relaxed" style={{ color: 'var(--zen-text-muted, #78716c)' }}>
+                        Support for Japanese, Chinese, German, and many more languages.
+                      </p>
+                    </div>
+                  </div>
+
+                  {/* Feature 5: Offline Capabilities */}
+                  <div className="flex gap-3 md:gap-4">
+                    <div className="flex-shrink-0 mt-0.5 md:mt-1" style={{ color: 'var(--zen-text-muted, #78716c)' }}>
+                      <IoCloudOfflineOutline size={20} className="md:w-6 md:h-6" />
+                    </div>
+                    <div className="flex-1 min-w-0">
+                      <h4 className="text-base md:text-lg font-medium mb-1.5 md:mb-2" style={{ color: 'var(--zen-heading, #1c1917)' }}>Offline Usage</h4>
+                      <p className="text-xs md:text-sm font-light leading-relaxed" style={{ color: 'var(--zen-text-muted, #78716c)' }}>
+                        All data is stored locally - your books, notes, and translations remain private. The offline translation capability is performed with Bergamot - locally executed language models. More offline features are actively in development.
+                      </p>
+                    </div>
+                  </div>
+
+                  {/* Feature 6: Clean Reading */}
+                  <div className="flex gap-3 md:gap-4">
+                    <div className="flex-shrink-0 mt-0.5 md:mt-1" style={{ color: 'var(--zen-text-muted, #78716c)' }}>
+                      <IoBarChartOutline size={20} className="md:w-6 md:h-6" />
+                    </div>
+                    <div className="flex-1 min-w-0">
+                      <h4 className="text-base md:text-lg font-medium mb-1.5 md:mb-2" style={{ color: 'var(--zen-heading, #1c1917)' }}>Distraction-Free Reading</h4>
+                      <p className="text-xs md:text-sm font-light leading-relaxed" style={{ color: 'var(--zen-text-muted, #78716c)' }}>
+                        Clean, minimalist interface focused on the text. Customizable themes adapt to your preference (light, dark, or sepia) for comfortable reading in any environment.
+                      </p>
+                    </div>
+                  </div>
+                </div>
+              </div>
+
+              {/* Getting Started */}
+              <div className="text-center" style={{ marginBottom: 0, paddingBottom: 0, paddingTop: showHowToUse ? '1rem' : 0, marginTop: showHowToUse ? '1rem' : 0 }}>
+                <button
+                  onClick={() => {
+                    setShowHowToUse(false);
+                    // Scroll to very top after transition
+                    setTimeout(() => {
+                      window.scrollTo({ top: 0, behavior: 'smooth' });
+                    }, 100);
+                  }}
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter' || e.key === ' ') {
+                      e.preventDefault();
+                      setShowHowToUse(false);
+                      setTimeout(() => {
+                        window.scrollTo({ top: 0, behavior: 'smooth' });
+                      }, 100);
+                    }
+                  }}
+                  className="inline-flex items-center gap-2 px-0 py-2 transition-all duration-300 hover:opacity-70 focus:outline-none focus:ring-2 focus:ring-rose-300 focus:ring-offset-2 rounded-sm min-h-[44px] touch-manipulation"
+                  style={{
+                    color: 'var(--zen-text-muted, #78716c)',
+                    backgroundColor: 'transparent',
+                  }}
+                  aria-label="Start reading - return to main view"
+                >
+                  <span className="text-sm font-light tracking-wider uppercase letter-spacing-wider border-b border-current pb-0.5 transition-all duration-300 hover:border-opacity-50" style={{ borderColor: 'var(--zen-text-muted, #78716c)' }}>
+                    Start Reading
+                  </span>
+                </button>
+                <p className="mt-3 md:mt-4 text-xs md:text-sm font-light px-2" style={{ color: 'var(--zen-text-muted, #78716c)', marginBottom: 0, paddingBottom: 0 }}>
+                  Upload an EPUB file to begin your reading journey
+                </p>
+              </div>
+            </div>
         </section>
+        )}
+
+        {/* Upload Section */}
+        {!showHowToUse && (
+        <section 
+          className="w-full flex justify-center mb-20 animate-in fade-in slide-in-from-bottom-12 duration-500 delay-200"
+          ref={(el) => {
+            if (el) {
+              (window as any).uploadSectionRef = el;
+            }
+          }}
+        >
+          <div>
+            <FileUpload />
+          </div>
+        </section>
+        )}
 
         {/* Library Section */}
-        {books && books.length > 0 && (
-          <section className="w-full max-w-4xl animate-in fade-in slide-in-from-bottom-16 duration-1000 delay-300">
+        {!showHowToUse && books && books.length > 0 && (
+          <section 
+            className="w-full max-w-4xl animate-in fade-in slide-in-from-bottom-16 duration-500 delay-300"
+          >
+            <div>
             <div className="flex items-center justify-between mb-12 px-2">
               <h2 className="text-3xl font-serif font-light tracking-wide" style={{ color: 'var(--zen-heading, #1c1917)' }}>
                 Library
@@ -637,11 +1018,13 @@ export default function Home() {
                 </div>
               ))}
             </div>
+            </div>
           </section>
         )}
 
         {/* Footer with GitHub link */}
-        <footer className="mt-32 pb-4 text-center">
+        {!showHowToUse && (
+        <footer className="mt-32 pb-4 text-center animate-in fade-in slide-in-from-bottom-20 duration-500 delay-400">
           <a
             href="https://github.com/tulerpetontidae/enso-read"
             target="_blank"
@@ -653,6 +1036,7 @@ export default function Home() {
             <span className="text-xs">tulerpetontidae/enso-read</span>
           </a>
         </footer>
+        )}
       </main>
     </div>
   );
