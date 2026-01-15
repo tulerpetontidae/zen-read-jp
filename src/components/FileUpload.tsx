@@ -341,6 +341,7 @@ export default function FileUpload() {
                 console.warn('Language detection error:', error);
             }
 
+            const isLoggedIn = !!(db.cloud?.currentUser as any)?.isLoggedIn;
             await db.books.add({
                 id,
                 title: file.name.replace('.epub', ''),
@@ -349,6 +350,18 @@ export default function FileUpload() {
                 coverImage,
                 sourceLanguage,
             });
+            
+            // If logged in, trigger sync to upload new book
+            if (isLoggedIn && db.cloud) {
+                // Wait a bit for add operation to complete
+                setTimeout(async () => {
+                    try {
+                        await db.cloud.sync();
+                    } catch (e) {
+                        // Silently fail - autoSync should handle it
+                    }
+                }, 100);
+            }
 
             // Stay on landing page - don't auto-navigate to reader
             setIsProcessing(false);

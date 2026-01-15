@@ -51,3 +51,8 @@ public/jmdict-*.json
 
 # feature tracking
 FEATURES.md
+
+dexie-cloud.key
+.cursor/debug.log
+
+dexie-cloud.json

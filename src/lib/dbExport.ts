@@ -1,5 +1,5 @@
 import { db } from './db';
-import type { Book, Progress, WebConfig, DictionaryEntry, Translation, Note } from './db';
+import type { Book, Progress, WebConfig, Translation, Note } from './db';
 
 export interface ExportData {
   version: string;
@@ -9,7 +9,6 @@ export interface ExportData {
     books: Array<Omit<Book, 'data'> & { data: string }>; // ArrayBuffer converted to base64
     progress: Progress[];
     settings: WebConfig[];
-    dictionary: DictionaryEntry[];
     translations: Translation[];
     notes: Note[];
   };
@@ -34,11 +33,10 @@ function arrayBufferToBase64(buffer: ArrayBuffer): string {
 export async function exportDatabase(): Promise<string> {
   try {
     // Fetch all data from all tables
-    const [books, progress, settings, dictionary, translations, notes] = await Promise.all([
+    const [books, progress, settings, translations, notes] = await Promise.all([
       db.books.toArray(),
       db.progress.toArray(),
       db.settings.toArray(),
-      db.dictionary.toArray(),
       db.translations.toArray(),
       db.notes.toArray(),
     ]);
@@ -61,7 +59,6 @@ export async function exportDatabase(): Promise<string> {
         books: booksWithBase64,
         progress,
         settings: settingsWithoutApiKey,
-        dictionary,
         translations,
         notes,
       },

@@ -1,4 +1,5 @@
 import Dexie, { type EntityTable } from 'dexie';
+import dexieCloud from 'dexie-cloud-addon';
 
 interface Book {
   id: string; // UUID
@@ -21,14 +22,6 @@ interface Progress {
   scrollOffset?: number; // Absolute scroll position in pixels
   paragraphHash?: string; // Hash of paragraph at saved position for precise restoration
   updatedAt: number;
-}
-
-interface DictionaryEntry {
-  id?: number;
-  kanji: string;
-  reading: string;
-  definitions: string[];
-  tags: string[];
 }
 
 interface Translation {
@@ -78,11 +71,10 @@ interface Bookmark {
   updatedAt: number;
 }
 
-const db = new Dexie('EnsoReadDB') as Dexie & {
+const db = new Dexie('EnsoReadDB', { addons: [dexieCloud] }) as Dexie & {
   books: EntityTable<Book, 'id'>;
   progress: EntityTable<Progress, 'bookId'>;
   settings: EntityTable<WebConfig, 'key'>;
-  dictionary: EntityTable<DictionaryEntry, 'id'>;
   translations: EntityTable<Translation, 'id'>;
   notes: EntityTable<Note, 'id'>;
   chats: EntityTable<ChatMessage, 'id'>;
@@ -163,8 +155,38 @@ db.version(7).stores({
   }
 });
 
-// Initialize default bookmark groups on first load (if not already done)
+// Version 8: Dexie Cloud integration
+// Using 'id' (not '@id') to allow custom UUIDs for importing existing data
+// Dexie Cloud supports custom IDs as long as they are random and globally unique
+db.version(8).stores({
+  books: 'id, title, addedAt, sourceLanguage',
+  progress: 'bookId, updatedAt',
+  translations: 'id, bookId, paragraphHash, createdAt',
+  notes: 'id, bookId, paragraphHash, updatedAt',
+  chats: 'id, threadId, bookId, paragraphHash, createdAt',
+  bookmarkGroups: 'id, order',
+  bookmarks: 'id, bookId, paragraphHash, colorGroupId',
+  settings: 'key',
+  dictionary: '++id, kanji, reading, *tags' // Keep for backward compatibility, but unsynced
+});
+
+// Configure Dexie Cloud
+db.cloud.configure({
+  databaseUrl: process.env.NEXT_PUBLIC_DEXIE_CLOUD_DB_URL || '',
+  requireAuth: false, // Make sync optional - app works without login
+  unsyncedTables: ['settings', 'dictionary'],
+  // Enable automatic syncing when online
+  autoSync: true,
+});
+
+
+// Initialize default bookmark groups on first load (if not already done and not logged in)
 export async function initializeBookmarkGroups(): Promise<void> {
+  // Don't initialize if user is logged in - cloud sync will handle bookmark groups
+  if (db.cloud?.currentUser?.isLoggedIn) {
+    return;
+  }
+  
   const count = await db.bookmarkGroups.count();
   if (count === 0) {
     const { v4: uuidv4 } = await import('uuid');
@@ -179,5 +201,5 @@ export async function initializeBookmarkGroups(): Promise<void> {
   }
 }
 
-export type { Book, Progress, WebConfig, DictionaryEntry, Translation, Note, ChatMessage, BookmarkGroup, Bookmark };
+export type { Book, Progress, WebConfig, Translation, Note, ChatMessage, BookmarkGroup, Bookmark };
 export { db };

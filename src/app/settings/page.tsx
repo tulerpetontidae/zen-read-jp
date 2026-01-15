@@ -13,20 +13,7 @@ import { SUPPORTED_LANGUAGES } from '@/lib/languages';
 import { exportDatabase, downloadExport } from '@/lib/dbExport';
 import { parseImportFile, validateExportData, importDatabaseOverwrite, importDatabaseMerge } from '@/lib/dbImport';
 import type { BookmarkGroup } from '@/lib/db';
-
-// Get initial theme from localStorage synchronously
-function getInitialTheme(): string {
-    if (typeof window === 'undefined') return 'light';
-    try {
-        const theme = localStorage.getItem('enso-read-theme');
-        if (theme && ['light', 'sepia', 'dark'].includes(theme)) {
-            return theme;
-        }
-    } catch (e) {
-        // localStorage might be disabled
-    }
-    return 'light';
-}
+import { CloudSync } from '@/components/CloudSync';
 
 export default function SettingsPage() {
     const [apiKey, setApiKey] = useState('');
@@ -35,7 +22,7 @@ export default function SettingsPage() {
     const [selectedFont, setSelectedFont] = useState('noto-serif');
     const [selectedWidth, setSelectedWidth] = useState('medium');
     const [selectedFontSize, setSelectedFontSize] = useState('medium');
-    const [selectedTheme, setSelectedTheme] = useState(getInitialTheme);
+    const [selectedTheme, setSelectedTheme] = useState('light');
     const [selectedEngine, setSelectedEngine] = useState<TranslationEngine>('openai');
     const [targetLanguage, setTargetLanguage] = useState<string>('en');
     const [bergamotSourceLanguage, setBergamotSourceLanguage] = useState<string>('ja');
@@ -656,7 +643,7 @@ export default function SettingsPage() {
                                                 ? 'border-rose-400 ring-2 ring-rose-200'
                                                 : 'hover:border-stone-300'
                                         }`}
-                                        style={{ borderColor: selectedTheme === theme.value ? undefined : 'var(--zen-border, #e7e5e4)' }}
+                                        style={selectedTheme === theme.value ? {} : { borderColor: 'var(--zen-border, #e7e5e4)' }}
                                     >
                                         <div className={`w-10 h-10 rounded-full border-2 ${theme.preview}`} />
                                         <span style={{ color: 'var(--zen-text-muted, #57534e)' }}>{theme.label}</span>
@@ -1432,6 +1419,9 @@ export default function SettingsPage() {
                         </div>
                     )}
                 </div>
+
+                {/* Cloud Sync */}
+                <CloudSync />
 
                 {/* Save Button */}
                 <div className="flex items-center gap-4">

@@ -15,6 +15,7 @@ import ePub from "epubjs";
 import { initializeDefaultBook } from "@/lib/initDefaultBook";
 import { initializeBookmarkGroups } from "@/lib/db";
 import { SUPPORTED_LANGUAGES, getLanguageName, getLanguageCode, getLongestLanguageName, LANGUAGE_MAP } from "@/lib/languages";
+import { CloudSyncIndicator } from "@/components/CloudSyncIndicator";
 
 // Keyword highlighting component with hover tooltip
 function KeywordHighlight({ word, definition }: { word: string; definition: string }) {
@@ -377,6 +378,9 @@ export default function Home() {
       >
         <IoSettingsOutline size={20} />
       </Link>
+
+      {/* Cloud Sync Indicator */}
+      <CloudSyncIndicator />
 
       {/* Background Ambience */}
       <div className="fixed inset-0 pointer-events-none">

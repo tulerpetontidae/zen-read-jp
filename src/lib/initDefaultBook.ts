@@ -20,16 +20,32 @@ function hashText(text: string): string {
 
 export async function initializeDefaultBook(): Promise<void> {
   try {
-    // Check if database already has books
-    const existingBooks = await db.books.toArray();
-    if (existingBooks.length > 0) {
-      return; // Already initialized
+    // Don't initialize if user is logged in - cloud sync will handle books
+    if (db.cloud?.currentUser?.isLoggedIn) {
+      return;
     }
-
-    // Check if we've already initialized
+    
+    // Check if we've already initialized (check this first to avoid unnecessary book queries)
     const initFlag = await db.settings.get('default_book_initialized');
     if (initFlag?.value === 'true') {
       return; // Already initialized
+    }
+    
+    // Add a small delay to avoid race conditions with restore operations
+    await new Promise(resolve => setTimeout(resolve, 200));
+    
+    // Check if database already has books (check again after delay)
+    const existingBooks = await db.books.toArray();
+    if (existingBooks.length > 0) {
+      // Mark as initialized if books exist (even if flag wasn't set)
+      await db.settings.put({ key: 'default_book_initialized', value: 'true' });
+      return; // Already has books
+    }
+    
+    // Double-check init flag after delay (in case it was set during the delay)
+    const initFlagAfterDelay = await db.settings.get('default_book_initialized');
+    if (initFlagAfterDelay?.value === 'true') {
+      return; // Was initialized during the delay
     }
 
     // Load the Genji EPUB file

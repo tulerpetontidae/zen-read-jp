@@ -533,6 +533,9 @@ const TranslatableParagraph = React.memo(function TranslatableParagraph({
         setIsNoteSaving(true);
         try {
             if (noteContent.trim()) {
+                // #region agent log
+                setTimeout(()=>fetch('http://127.0.0.1:7242/ingest/5343a94c-3e7c-4082-b77e-5a423e497148',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'TranslatableParagraph.tsx:536',message:'Note put',data:{bookId,paragraphHash,isLoggedIn:!!(db.cloud?.currentUser as any)?.isLoggedIn},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'E'})}).catch(()=>{}),0);
+                // #endregion
                 await db.notes.put({
                     id: noteId,
                     bookId,

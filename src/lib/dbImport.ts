@@ -1,5 +1,5 @@
 import { db } from './db';
-import type { Book, Progress, WebConfig, DictionaryEntry, Translation, Note } from './db';
+import type { Book, Progress, WebConfig, Translation, Note } from './db';
 import type { ExportData } from './dbExport';
 
 export interface ValidationError {
@@ -48,7 +48,7 @@ export function validateExportData(data: any): { valid: boolean; errors: Validat
     return { valid: false, errors };
   }
 
-  const { books, progress, settings, dictionary, translations, notes } = data.data;
+  const { books, progress, settings, translations, notes } = data.data;
 
   // Validate books array
   if (!Array.isArray(books)) {
@@ -104,26 +104,6 @@ export function validateExportData(data: any): { valid: boolean; errors: Validat
       }
       if (typeof setting.value !== 'string') {
         errors.push({ field: `data.settings[${index}].value`, message: 'Missing or invalid setting value' });
-      }
-    });
-  }
-
-  // Validate dictionary array
-  if (!Array.isArray(dictionary)) {
-    errors.push({ field: 'data.dictionary', message: 'Dictionary must be an array' });
-  } else {
-    dictionary.forEach((entry: any, index: number) => {
-      if (!entry.kanji || typeof entry.kanji !== 'string') {
-        errors.push({ field: `data.dictionary[${index}].kanji`, message: 'Missing or invalid kanji' });
-      }
-      if (!entry.reading || typeof entry.reading !== 'string') {
-        errors.push({ field: `data.dictionary[${index}].reading`, message: 'Missing or invalid reading' });
-      }
-      if (!Array.isArray(entry.definitions)) {
-        errors.push({ field: `data.dictionary[${index}].definitions`, message: 'Missing or invalid definitions array' });
-      }
-      if (!Array.isArray(entry.tags)) {
-        errors.push({ field: `data.dictionary[${index}].tags`, message: 'Missing or invalid tags array' });
       }
     });
   }
@@ -197,9 +177,11 @@ export async function importDatabaseOverwrite(exportData: ExportData): Promise<v
       db.books.clear(),
       db.progress.clear(),
       db.settings.clear(),
-      db.dictionary.clear(),
       db.translations.clear(),
       db.notes.clear(),
+      db.bookmarks.clear(),
+      db.bookmarkGroups.clear(),
+      db.chats.clear(),
     ]);
 
     // Convert base64 book data back to ArrayBuffer
@@ -208,15 +190,24 @@ export async function importDatabaseOverwrite(exportData: ExportData): Promise<v
       data: base64ToArrayBuffer(book.data),
     }));
 
+    const isLoggedIn = !!(db.cloud?.currentUser as any)?.isLoggedIn;
     // Import all data
     await Promise.all([
       db.books.bulkAdd(books),
       db.progress.bulkAdd(exportData.data.progress),
       db.settings.bulkAdd(exportData.data.settings),
-      db.dictionary.bulkAdd(exportData.data.dictionary),
       db.translations.bulkAdd(exportData.data.translations),
       db.notes.bulkAdd(exportData.data.notes),
+      exportData.data.bookmarks ? db.bookmarks.bulkAdd(exportData.data.bookmarks) : Promise.resolve(),
+      exportData.data.bookmarkGroups ? db.bookmarkGroups.bulkAdd(exportData.data.bookmarkGroups) : Promise.resolve(),
+      exportData.data.chats ? db.chats.bulkAdd(exportData.data.chats) : Promise.resolve(),
     ]);
+    // If logged in, trigger sync to upload imported data
+    if (isLoggedIn && db.cloud) {
+      // Wait a bit for bulkAdd operations to complete
+      await new Promise(resolve => setTimeout(resolve, 100));
+      await db.cloud.sync();
+    }
   } catch (error) {
     console.error('Import overwrite failed:', error);
     throw new Error('Failed to import database: ' + (error instanceof Error ? error.message : 'Unknown error'));
@@ -262,16 +253,6 @@ export async function importDatabaseMerge(exportData: ExportData): Promise<void>
         continue;
       }
       await db.settings.put(setting);
-    }
-
-    // Merge dictionary: add new entries (by id if exists, or by content)
-    for (const entry of exportData.data.dictionary) {
-      if (entry.id) {
-        await db.dictionary.put(entry);
-      } else {
-        // Add new entry without id
-        await db.dictionary.add(entry);
-      }
     }
 
     // Merge translations: replace by ID (new version always wins in merge mode)
